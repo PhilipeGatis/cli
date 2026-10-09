@@ -1629,17 +1629,23 @@ func IsOnDefaultBranch(repo *git.Repository) (bool, string) {
 	if currentBranch == "" {
 		return false, ""
 	}
+	return IsDefaultBranchName(repo, currentBranch), currentBranch
+}
 
+// IsDefaultBranchName reports whether branchName (a short name such as
+// "main") is the repository's default branch, resolved the same way as
+// IsOnDefaultBranch: GetDefaultBranchName, falling back to main/master when
+// the default cannot be determined.
+func IsDefaultBranchName(repo *git.Repository, branchName string) bool {
+	if branchName == "" {
+		return false
+	}
 	defaultBranch := GetDefaultBranchName(repo)
 	if defaultBranch == "" {
 		// Can't determine default, check common names
-		if currentBranch == branchMain || currentBranch == branchMaster {
-			return true, currentBranch
-		}
-		return false, currentBranch
+		return branchName == branchMain || branchName == branchMaster
 	}
-
-	return currentBranch == defaultBranch, currentBranch
+	return branchName == defaultBranch
 }
 
 // prepareTranscriptForState ensures the transcript is up-to-date for the given session.

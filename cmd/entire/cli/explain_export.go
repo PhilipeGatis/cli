@@ -78,7 +78,7 @@ func runExplainExport(ctx context.Context, w, errW io.Writer, opts explainExport
 		return runExplainStreamTranscript(ctx, w, errW, opts)
 	case opts.json:
 		if !hasTarget {
-			return runExplainListJSON(ctx, w, errW, opts.sessionFilter, "", opts.listLimit)
+			return runExplainListJSON(ctx, w, errW, checkpointListFilters{session: opts.sessionFilter}, opts.listLimit)
 		}
 		return runExplainCheckpointJSON(ctx, w, errW, opts)
 	default:
@@ -802,7 +802,8 @@ type branchCheckpointJSON struct {
 }
 
 // runExplainListJSON emits a JSON array of branch checkpoints, optionally
-// filtered by session ID prefix (mirrors the prose list view). The cap
+// filtered by session ID prefix, author, and named branch (mirrors the prose
+// list view). The cap
 // defaults to branchCheckpointsLimit; pass listLimit > 0 to override.
 //
 // Truncation detection: getBranchCheckpoints reports whether it hit its scan
@@ -810,7 +811,7 @@ type branchCheckpointJSON struct {
 // hard-cap the flat array at `limit` for the JSON contract, flagging
 // truncation if that slice drops anything. The JSON shape stays a flat array
 // so jq pipelines don't have to unwrap.
-func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter, authorFilter string, listLimit int) error {
+func runExplainListJSON(ctx context.Context, w, errW io.Writer, filters checkpointListFilters, listLimit int) error {
 	repo, err := openRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
@@ -822,7 +823,12 @@ func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter, a
 		limit = branchCheckpointsLimit
 	}
 
-	points, truncated, err := getBranchCheckpointsByAuthor(ctx, repo, limit, authorFilter)
+	branchOpts, err := filters.branchCheckpointsOptions(repo)
+	if err != nil {
+		return err
+	}
+
+	points, truncated, err := getBranchCheckpointsWithOptions(ctx, repo, limit, branchOpts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return NewSilentError(ctx.Err())
@@ -842,7 +848,7 @@ func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter, a
 
 	out := make([]branchCheckpointJSON, 0, len(points))
 	for _, p := range points {
-		if sessionFilter != "" && !checkpointMatchesSessionFilter(p, sessionFilter) {
+		if filters.session != "" && !checkpointMatchesSessionFilter(p, filters.session) {
 			continue
 		}
 		entry := branchCheckpointJSON{

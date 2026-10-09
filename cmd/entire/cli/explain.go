@@ -552,7 +552,7 @@ func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, ch
 	}
 
 	// Default or with session filter: show list view (optionally filtered by session)
-	return runExplainBranchWithFilter(ctx, w, errW, noPager, sessionID, "")
+	return runExplainBranchWithFilter(ctx, w, errW, noPager, checkpointListFilters{session: sessionID})
 }
 
 // explainTargetNotFoundError reports that the requested checkpoint target
@@ -2288,12 +2288,19 @@ var errStopIteration = errors.New("stop iteration")
 // Only first-parent commits are included — commits from side branches merged into main are excluded,
 // since those could be feature branch commits that shouldn't be filtered out.
 func computeReachableFromMain(ctx context.Context, repo *git.Repository) map[plumbing.Hash]bool {
-	reachableFromMain := make(map[plumbing.Hash]bool)
-
 	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
 	if isOnDefault {
-		return reachableFromMain // No filtering needed on default branch
+		return make(map[plumbing.Hash]bool) // No filtering needed on default branch
 	}
+	return computeDefaultBranchFirstParents(ctx, repo)
+}
+
+// computeDefaultBranchFirstParents returns the set of commit hashes on the
+// default branch's first-parent chain, regardless of what HEAD points at.
+// It is the HEAD-independent half of computeReachableFromMain, used when
+// listing a branch named explicitly (checkpoint list --branch).
+func computeDefaultBranchFirstParents(ctx context.Context, repo *git.Repository) map[plumbing.Hash]bool {
+	reachableFromMain := make(map[plumbing.Hash]bool)
 
 	// Resolve main branch hash
 	var mainBranchHash plumbing.Hash
@@ -2374,7 +2381,54 @@ func walkFirstParentCommits(ctx context.Context, repo *git.Repository, from plum
 // (the two budgets are independent, so the slice can hold up to 2*limit
 // entries without anything being dropped).
 func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) ([]strategy.PendingCheckpoint, bool, error) {
-	return getBranchCheckpointsByAuthor(ctx, repo, limit, "")
+	return getBranchCheckpointsWithOptions(ctx, repo, limit, branchCheckpointsOptions{})
+}
+
+// branchCheckpointsOptions narrows getBranchCheckpointsWithOptions. The zero
+// value lists every checkpoint on the current (HEAD) branch.
+type branchCheckpointsOptions struct {
+	// authorFilter keeps only checkpoints whose commit author matches (see
+	// checkpointMatchesAuthorFilter); empty matches everything.
+	authorFilter string
+	// target, when non-nil, lists that branch as if HEAD pointed at it
+	// instead of walking from HEAD.
+	target *branchListTarget
+}
+
+// branchListTarget is a branch named explicitly (checkpoint list --branch),
+// resolved to its tip commit.
+type branchListTarget struct {
+	// name is the short branch name as the user gave it.
+	name string
+	// tip is the commit the walk starts from.
+	tip plumbing.Hash
+	// isDefault selects the full-DAG walk used on the default branch rather
+	// than the first-parent walk that stops at the default branch.
+	isDefault bool
+}
+
+// resolveBranchListTarget resolves a branch name for checkpoint list
+// --branch: refs/heads/<name>, falling back to refs/remotes/origin/<name>.
+// Whether it is the default branch is decided by name, the same way
+// strategy.IsOnDefaultBranch decides it for HEAD.
+func resolveBranchListTarget(repo *git.Repository, name string) (*branchListTarget, error) {
+	local := plumbing.NewBranchReferenceName(name)
+	if err := local.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid branch name %q: %w", name, err)
+	}
+	ref, err := repo.Reference(local, true)
+	if err != nil {
+		ref, err = repo.Reference(plumbing.NewRemoteReferenceName("origin", name), true)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("branch %q not found locally or on origin "+
+			"(branches that were merged and deleted are not supported yet)", name)
+	}
+	return &branchListTarget{
+		name:      name,
+		tip:       ref.Hash(),
+		isDefault: strategy.IsDefaultBranchName(repo, name),
+	}, nil
 }
 
 // normalizeAuthorFilter trims surrounding whitespace from an --author value.
@@ -2397,13 +2451,14 @@ func checkpointMatchesAuthorFilter(p strategy.PendingCheckpoint, authorFilter st
 	return strings.Contains(strings.ToLower(ident), strings.ToLower(authorFilter))
 }
 
-// getBranchCheckpointsByAuthor is getBranchCheckpoints restricted to
-// checkpoints whose commit author matches authorFilter (see
-// checkpointMatchesAuthorFilter); an empty filter matches everything. The
-// filter runs during the commit walk, before the limit is applied, so a
-// teammate's older checkpoints aren't evicted by everyone else's newer ones.
-func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, limit int, authorFilter string) ([]strategy.PendingCheckpoint, bool, error) {
-	authorFilter = normalizeAuthorFilter(authorFilter)
+// getBranchCheckpointsWithOptions is getBranchCheckpoints narrowed by opts.
+// The author filter runs during the commit walk, before the limit is
+// applied, so a teammate's older checkpoints aren't evicted by everyone
+// else's newer ones. With opts.target set, the walk starts at that branch's
+// tip and its default-branch status replaces HEAD's.
+func getBranchCheckpointsWithOptions(ctx context.Context, repo *git.Repository, limit int, opts branchCheckpointsOptions) ([]strategy.PendingCheckpoint, bool, error) {
+	authorFilter := normalizeAuthorFilter(opts.authorFilter)
+
 	// Warn (once per process) if metadata branches are disconnected
 	strategy.WarnIfMetadataDisconnected(ctx)
 
@@ -2445,17 +2500,25 @@ func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, lim
 		}
 	}
 
-	head, err := repo.Head()
-	if err != nil {
-		// Unborn HEAD (no commits yet) - return empty list instead of erroring
-		if errors.Is(err, plumbing.ErrReferenceNotFound) {
-			return []strategy.PendingCheckpoint{}, false, nil
+	// Start hash and default-branch status (which decides how history is
+	// walked) come from the named branch when given, else from HEAD.
+	var startHash plumbing.Hash
+	var isOnDefault bool
+	if opts.target != nil {
+		startHash = opts.target.tip
+		isOnDefault = opts.target.isDefault
+	} else {
+		head, headErr := repo.Head()
+		if headErr != nil {
+			// Unborn HEAD (no commits yet) - return empty list instead of erroring
+			if errors.Is(headErr, plumbing.ErrReferenceNotFound) {
+				return []strategy.PendingCheckpoint{}, false, nil
+			}
+			return nil, false, fmt.Errorf("failed to get HEAD: %w", headErr)
 		}
-		return nil, false, fmt.Errorf("failed to get HEAD: %w", err)
+		startHash = head.Hash()
+		isOnDefault, _ = strategy.IsOnDefaultBranch(repo)
 	}
-
-	// Check if we're on the default branch (decides how history is walked)
-	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
 
 	var points []strategy.PendingCheckpoint
 
@@ -2504,7 +2567,7 @@ func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, lim
 		// On the default branch, use full DAG walk to find checkpoint commits
 		// on merged feature branches (second parents of merge commits).
 		iter, iterErr := repo.Log(&git.LogOptions{
-			From:  head.Hash(),
+			From:  startHash,
 			Order: git.LogOrderCommitterTime,
 		})
 		if iterErr != nil {
@@ -2527,9 +2590,11 @@ func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, lim
 	} else {
 		// On feature branches, use first-parent walk with branch filtering.
 		// This avoids walking into main's full history through merge commit parents.
-		reachableFromMain := computeReachableFromMain(ctx, repo)
+		// isOnDefault is already false here (for HEAD or the named branch), so
+		// build the default branch's first-parent set unconditionally.
+		reachableFromMain := computeDefaultBranchFirstParents(ctx, repo)
 
-		err = walkFirstParentCommits(ctx, repo, head.Hash(), commitScanLimit, func(c *object.Commit) error {
+		err = walkFirstParentCommits(ctx, repo, startHash, commitScanLimit, func(c *object.Commit) error {
 			// Once we hit a commit reachable from main on the first-parent chain,
 			// all earlier ancestors are also shared-with-main, so stop scanning.
 			if reachableFromMain[c.Hash] {
@@ -2692,17 +2757,57 @@ func readLatestCommittedSessionPrompt(ctx context.Context, store checkpoint.Sess
 	return ""
 }
 
-// runExplainBranchWithFilter shows checkpoints on the current branch, optionally filtered by session.
+// checkpointListFilters are the condensed-list filters shared by the human
+// branch view and the --json list. Zero values mean "no filter": the current
+// branch, every author, every session.
+type checkpointListFilters struct {
+	// session keeps checkpoints whose session ID matches (prefix); applied
+	// after the walk by the formatters.
+	session string
+	// author keeps checkpoints whose commit author matches; applied during
+	// the walk (see branchCheckpointsOptions).
+	author string
+	// branch lists that branch instead of HEAD's (see resolveBranchListTarget).
+	branch string
+}
+
+// branchCheckpointsOptions resolves the walk options for these filters,
+// including the named branch (erroring when it cannot be resolved).
+func (f checkpointListFilters) branchCheckpointsOptions(repo *git.Repository) (branchCheckpointsOptions, error) {
+	opts := branchCheckpointsOptions{authorFilter: f.author}
+	if f.branch != "" {
+		target, err := resolveBranchListTarget(repo, f.branch)
+		if err != nil {
+			return branchCheckpointsOptions{}, err
+		}
+		opts.target = target
+	}
+	return opts, nil
+}
+
+// runExplainBranchWithFilter shows checkpoints on the current branch (or the
+// branch named by filters.branch), optionally filtered by session and author.
 // This is strategy-agnostic - it queries checkpoints directly.
-func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager bool, sessionFilter, authorFilter string) error {
+func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager bool, filters checkpointListFilters) error {
+	filters.author = normalizeAuthorFilter(filters.author)
 	repo, err := openRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
 	}
 	defer repo.Close()
 
-	// Get current branch name
+	// Resolve the named branch before anything else so an unknown name is a
+	// real error rather than the empty list a failed walk degrades to below.
+	opts, err := filters.branchCheckpointsOptions(repo)
+	if err != nil {
+		return err
+	}
+
+	// Get current branch name (or the named branch's)
 	branchName := strategy.GetCurrentBranchName(repo)
+	if opts.target != nil {
+		branchName = opts.target.name
+	}
 	if branchName == "" {
 		// Detached HEAD state or unborn HEAD - try to use short commit hash if possible
 		head, headErr := repo.Head()
@@ -2731,7 +2836,7 @@ func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager 
 	// e.g. 60 live + 60 imported shows 120 rows with no note here, but 100
 	// entries with a note under --json. The `--limit` help text ("Only meaningful with --json")
 	// reflects that the cap is a JSON-path concept.
-	points, truncated, err := getBranchCheckpointsByAuthor(ctx, repo, branchCheckpointsLimit, authorFilter)
+	points, truncated, err := getBranchCheckpointsWithOptions(ctx, repo, branchCheckpointsLimit, opts)
 	if err != nil {
 		// If context was cancelled (e.g. user hit Ctrl+C), exit silently
 		if ctx.Err() != nil {
@@ -2744,7 +2849,7 @@ func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager 
 	}
 
 	// Format output
-	output := formatBranchCheckpoints(w, branchName, points, branchListFilter{session: sessionFilter, author: normalizeAuthorFilter(authorFilter)})
+	output := formatBranchCheckpoints(w, branchName, points, filters)
 
 	outputExplainContent(w, output, noPager)
 
@@ -2945,20 +3050,15 @@ const (
 	maxPromptDisplayLength = 60
 )
 
-// branchListFilter holds the condensed-list filters shown in the branch view
-// header and reflected in its empty-state message.
-type branchListFilter struct {
-	session string // session ID or prefix (applied in formatBranchCheckpoints)
-	author  string // author substring (already applied by the commit walk)
-}
-
-func (f branchListFilter) active() bool {
+// active reports whether a filter narrows the list (branch only picks which
+// list is shown, so it doesn't count).
+func (f checkpointListFilters) active() bool {
 	return f.session != "" || f.author != ""
 }
 
 // emptyMessage describes an empty filtered list, e.g.
 // `No checkpoints by authors matching "x" on this branch.`
-func (f branchListFilter) emptyMessage() string {
+func (f checkpointListFilters) emptyMessage() string {
 	var parts []string
 	if f.author != "" {
 		parts = append(parts, fmt.Sprintf("by authors matching %q", f.author))
@@ -2973,8 +3073,8 @@ func (f branchListFilter) emptyMessage() string {
 // Groups commits by checkpoint ID and shows the prompt for each checkpoint.
 // If filter.session is non-empty, only shows checkpoints matching that session
 // ID (or prefix). filter.author is display-only here: points are expected to be
-// author-filtered already (see getBranchCheckpointsByAuthor).
-func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.PendingCheckpoint, filter branchListFilter) string {
+// author-filtered already (see getBranchCheckpointsWithOptions).
+func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.PendingCheckpoint, filter checkpointListFilters) string {
 	var sb strings.Builder
 	styles := newStatusStyles(w)
 	sessionFilter := filter.session
