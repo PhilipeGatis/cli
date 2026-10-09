@@ -81,6 +81,7 @@ func newCheckpointSearchCmd() *cobra.Command {
 func newCheckpointListCmd() *cobra.Command {
 	var sessionFlag string
 	var authorFlag string
+	var branchFlag string
 	var noPagerFlag bool
 	var jsonFlag bool
 	var pendingFlag bool
@@ -140,8 +141,15 @@ present, possibly empty.
 Optionally filter condensed checkpoints by session ID with --session, or by
 commit author with --author: a case-insensitive substring of "Name <email>",
 like git log --author but without regex (imported checkpoints have no author
-and are left out; a blank value means no filter). Neither applies with
---pending or --outgoing.`,
+and are left out; a blank value means no filter).
+
+Use --branch <name> to list another branch's condensed checkpoints as if it
+were checked out: the local branch, else origin/<name>. For the default branch
+that is all checkpoints in its history; for any other branch, only those not
+yet on the default branch. Branches that were merged and deleted cannot be
+listed yet.
+
+None of --session, --author or --branch applies with --pending or --outgoing.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if checkDisabledGuard(cmd.Context(), cmd.OutOrStdout()) {
 				return nil
@@ -168,7 +176,14 @@ and are left out; a blank value means no filter). Neither applies with
 			if outgoingFlag && authorFlag != "" {
 				return errors.New("--author cannot be combined with --outgoing")
 			}
+			if pendingFlag && branchFlag != "" {
+				return errors.New("--branch cannot be combined with --pending")
+			}
+			if outgoingFlag && branchFlag != "" {
+				return errors.New("--branch cannot be combined with --outgoing")
+			}
 
+			filters := checkpointListFilters{session: sessionFlag, author: authorFlag, branch: branchFlag}
 			switch {
 			case outgoingFlag && jsonFlag:
 				return runCheckpointOutgoingListJSON(ctx, w, errW)
@@ -179,15 +194,16 @@ and are left out; a blank value means no filter). Neither applies with
 			case pendingFlag:
 				return runCheckpointPendingListHuman(ctx, w)
 			case jsonFlag:
-				return runExplainListJSON(ctx, w, errW, sessionFlag, authorFlag, 0)
+				return runExplainListJSON(ctx, w, errW, filters, 0)
 			default:
-				return runExplainBranchWithFilter(ctx, w, errW, noPagerFlag, sessionFlag, authorFlag)
+				return runExplainBranchWithFilter(ctx, w, errW, noPagerFlag, filters)
 			}
 		},
 	}
 
 	cmd.Flags().StringVar(&sessionFlag, "session", "", "Filter checkpoints by session ID (or prefix)")
 	cmd.Flags().StringVar(&authorFlag, "author", "", "Filter checkpoints by commit author (case-insensitive substring of \"Name <email>\")")
+	cmd.Flags().StringVar(&branchFlag, "branch", "", "List checkpoints for this branch instead of the current one (local, else origin/<name>)")
 	cmd.Flags().BoolVar(&noPagerFlag, "no-pager", false, "Disable pager output")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output as JSON instead of the human view")
 	cmd.Flags().BoolVar(&pendingFlag, "pending", false, "List pending work — a preview of the next checkpoint, uncondensed subagent task records, and logs-only resume points")
