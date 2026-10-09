@@ -78,7 +78,7 @@ func runExplainExport(ctx context.Context, w, errW io.Writer, opts explainExport
 		return runExplainStreamTranscript(ctx, w, errW, opts)
 	case opts.json:
 		if !hasTarget {
-			return runExplainListJSON(ctx, w, errW, opts.sessionFilter, opts.listLimit)
+			return runExplainListJSON(ctx, w, errW, opts.sessionFilter, "", opts.listLimit)
 		}
 		return runExplainCheckpointJSON(ctx, w, errW, opts)
 	default:
@@ -797,6 +797,8 @@ type branchCheckpointJSON struct {
 	IsLogsOnly       bool      `json:"is_logs_only,omitempty"`
 	SessionCount     int       `json:"session_count,omitempty"`
 	SessionIDs       []string  `json:"session_ids,omitempty"`
+	AuthorName       string    `json:"author_name,omitempty"`
+	AuthorEmail      string    `json:"author_email,omitempty"`
 }
 
 // runExplainListJSON emits a JSON array of branch checkpoints, optionally
@@ -808,7 +810,7 @@ type branchCheckpointJSON struct {
 // hard-cap the flat array at `limit` for the JSON contract, flagging
 // truncation if that slice drops anything. The JSON shape stays a flat array
 // so jq pipelines don't have to unwrap.
-func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter string, listLimit int) error {
+func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter, authorFilter string, listLimit int) error {
 	repo, err := openRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
@@ -820,7 +822,7 @@ func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter st
 		limit = branchCheckpointsLimit
 	}
 
-	points, truncated, err := getBranchCheckpoints(ctx, repo, limit)
+	points, truncated, err := getBranchCheckpointsByAuthor(ctx, repo, limit, authorFilter)
 	if err != nil {
 		if ctx.Err() != nil {
 			return NewSilentError(ctx.Err())
@@ -852,6 +854,8 @@ func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter st
 			IsLogsOnly:       p.IsLogsOnly,
 			SessionCount:     p.SessionCount,
 			SessionIDs:       p.SessionIDs,
+			AuthorName:       p.AuthorName,
+			AuthorEmail:      p.AuthorEmail,
 		}
 		if !p.CheckpointID.IsEmpty() {
 			entry.CheckpointID = p.CheckpointID.String()

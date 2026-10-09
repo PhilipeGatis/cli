@@ -552,7 +552,7 @@ func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, ch
 	}
 
 	// Default or with session filter: show list view (optionally filtered by session)
-	return runExplainBranchWithFilter(ctx, w, errW, noPager, sessionID)
+	return runExplainBranchWithFilter(ctx, w, errW, noPager, sessionID, "")
 }
 
 // explainTargetNotFoundError reports that the requested checkpoint target
@@ -2374,6 +2374,25 @@ func walkFirstParentCommits(ctx context.Context, repo *git.Repository, from plum
 // (the two budgets are independent, so the slice can hold up to 2*limit
 // entries without anything being dropped).
 func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) ([]strategy.PendingCheckpoint, bool, error) {
+	return getBranchCheckpointsByAuthor(ctx, repo, limit, "")
+}
+
+// checkpointMatchesAuthorFilter reports whether the checkpoint's commit author
+// matches authorFilter: a case-insensitive substring of the author name or
+// email, like `git log --author` without the regex. Imported (commit-less)
+// points have no author and never match a non-empty filter.
+func checkpointMatchesAuthorFilter(p strategy.PendingCheckpoint, authorFilter string) bool {
+	needle := strings.ToLower(authorFilter)
+	return strings.Contains(strings.ToLower(p.AuthorName), needle) ||
+		strings.Contains(strings.ToLower(p.AuthorEmail), needle)
+}
+
+// getBranchCheckpointsByAuthor is getBranchCheckpoints restricted to
+// checkpoints whose commit author matches authorFilter (see
+// checkpointMatchesAuthorFilter); an empty filter matches everything. The
+// filter runs during the commit walk, before the limit is applied, so a
+// teammate's older checkpoints aren't evicted by everyone else's newer ones.
+func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, limit int, authorFilter string) ([]strategy.PendingCheckpoint, bool, error) {
 	// Warn (once per process) if metadata branches are disconnected
 	strategy.WarnIfMetadataDisconnected(ctx)
 
@@ -2457,6 +2476,11 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 			IsTaskCheckpoint: cpInfo.IsTask,
 			ToolUseID:        cpInfo.ToolUseID,
 			Agent:            cpInfo.Agent,
+			AuthorName:       c.Author.Name,
+			AuthorEmail:      c.Author.Email,
+		}
+		if authorFilter != "" && !checkpointMatchesAuthorFilter(point, authorFilter) {
+			return
 		}
 		if !cpInfo.ListedStub {
 			point.SessionPrompt = readLatestCommittedSessionPrompt(ctx, store, cpID, cpInfo.SessionCount)
@@ -2528,7 +2552,10 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 	// Append imported (read-only, commit-less) checkpoints after the live points,
 	// bounded by the same limit so a one-month import doesn't produce an
 	// unbounded list. They get their own budget and never displace live points.
-	imported := getImportedPendingCheckpoints(ctx, repo)
+	var imported []strategy.PendingCheckpoint
+	if authorFilter == "" {
+		imported = getImportedPendingCheckpoints(ctx, repo)
+	}
 	sort.Slice(imported, func(i, j int) bool {
 		return imported[i].Date.After(imported[j].Date)
 	})
@@ -2656,7 +2683,7 @@ func readLatestCommittedSessionPrompt(ctx context.Context, store checkpoint.Sess
 
 // runExplainBranchWithFilter shows checkpoints on the current branch, optionally filtered by session.
 // This is strategy-agnostic - it queries checkpoints directly.
-func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager bool, sessionFilter string) error {
+func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager bool, sessionFilter, authorFilter string) error {
 	repo, err := openRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
@@ -2693,7 +2720,7 @@ func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager 
 	// e.g. 60 live + 60 imported shows 120 rows with no note here, but 100
 	// entries with a note under --json. The `--limit` help text ("Only meaningful with --json")
 	// reflects that the cap is a JSON-path concept.
-	points, truncated, err := getBranchCheckpoints(ctx, repo, branchCheckpointsLimit)
+	points, truncated, err := getBranchCheckpointsByAuthor(ctx, repo, branchCheckpointsLimit, authorFilter)
 	if err != nil {
 		// If context was cancelled (e.g. user hit Ctrl+C), exit silently
 		if ctx.Err() != nil {

@@ -5554,7 +5554,7 @@ func TestRunExplainBranchWithFilter_ShowsBranchView(t *testing.T) {
 	setupExplainBranchViewRepo(t)
 
 	var stdout, stderr bytes.Buffer
-	err := runExplainBranchWithFilter(context.Background(), &stdout, &stderr, true, "")
+	err := runExplainBranchWithFilter(context.Background(), &stdout, &stderr, true, "", "")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -5574,7 +5574,7 @@ func TestRunExplainBranchWithFilter_NoCheckpoints_ShowsHelpfulMessage(t *testing
 	setupExplainBranchViewRepo(t)
 
 	var stdout, stderr bytes.Buffer
-	err := runExplainBranchWithFilter(context.Background(), &stdout, &stderr, true, "")
+	err := runExplainBranchWithFilter(context.Background(), &stdout, &stderr, true, "", "")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -5600,7 +5600,7 @@ func TestRunExplainBranchWithFilter_DetachedHead(t *testing.T) {
 	require.NoError(t, w.Checkout(&git.CheckoutOptions{Hash: commitHash}))
 
 	var stdout, stderr bytes.Buffer
-	err = runExplainBranchWithFilter(context.Background(), &stdout, &stderr, true, "")
+	err = runExplainBranchWithFilter(context.Background(), &stdout, &stderr, true, "", "")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
