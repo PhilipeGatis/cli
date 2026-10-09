@@ -88,6 +88,11 @@ type PendingCheckpoint struct {
 	// Imported indicates this point is a read-only imported (commit-less)
 	// checkpoint on the v1 metadata branch. Imported points are read-only.
 	Imported bool
+
+	// AuthorName and AuthorEmail are the git author of the commit carrying
+	// the checkpoint trailer. Empty for imported (commit-less) points.
+	AuthorName  string
+	AuthorEmail string
 }
 
 // StepContext contains all information needed for saving a step checkpoint.

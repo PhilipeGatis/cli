@@ -80,6 +80,7 @@ func newCheckpointSearchCmd() *cobra.Command {
 // see issue #1767.
 func newCheckpointListCmd() *cobra.Command {
 	var sessionFlag string
+	var authorFlag string
 	var noPagerFlag bool
 	var jsonFlag bool
 	var pendingFlag bool
@@ -136,8 +137,10 @@ and a checkpoints array of {checkpoint_id, ref, created_at, agent,
 session_count, prompt, summary, files_touched, error}. The array is always
 present, possibly empty.
 
-Optionally filter condensed checkpoints by session ID with --session
-(not applicable with --pending or --outgoing).`,
+Optionally filter condensed checkpoints by session ID with --session, or by
+the commit author's name or email with --author (case-insensitive substring;
+imported checkpoints have no author and are left out). Neither applies with
+--pending or --outgoing.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if checkDisabledGuard(cmd.Context(), cmd.OutOrStdout()) {
 				return nil
@@ -157,6 +160,12 @@ Optionally filter condensed checkpoints by session ID with --session
 			if outgoingFlag && sessionFlag != "" {
 				return errors.New("--session cannot be combined with --outgoing")
 			}
+			if pendingFlag && authorFlag != "" {
+				return errors.New("--author cannot be combined with --pending")
+			}
+			if outgoingFlag && authorFlag != "" {
+				return errors.New("--author cannot be combined with --outgoing")
+			}
 
 			switch {
 			case outgoingFlag && jsonFlag:
@@ -168,14 +177,15 @@ Optionally filter condensed checkpoints by session ID with --session
 			case pendingFlag:
 				return runCheckpointPendingListHuman(ctx, w)
 			case jsonFlag:
-				return runExplainListJSON(ctx, w, errW, sessionFlag, 0)
+				return runExplainListJSON(ctx, w, errW, sessionFlag, authorFlag, 0)
 			default:
-				return runExplainBranchWithFilter(ctx, w, errW, noPagerFlag, sessionFlag)
+				return runExplainBranchWithFilter(ctx, w, errW, noPagerFlag, sessionFlag, authorFlag)
 			}
 		},
 	}
 
 	cmd.Flags().StringVar(&sessionFlag, "session", "", "Filter checkpoints by session ID (or prefix)")
+	cmd.Flags().StringVar(&authorFlag, "author", "", "Filter checkpoints by commit author name or email (case-insensitive substring)")
 	cmd.Flags().BoolVar(&noPagerFlag, "no-pager", false, "Disable pager output")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output as JSON instead of the human view")
 	cmd.Flags().BoolVar(&pendingFlag, "pending", false, "List pending work — a preview of the next checkpoint, uncondensed subagent task records, and logs-only resume points")
