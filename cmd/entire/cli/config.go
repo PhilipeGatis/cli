@@ -61,6 +61,21 @@ func LoadEntireSettings(ctx context.Context) (*settings.EntireSettings, error) {
 }
 
 // SaveEntireSettings saves the Entire settings to .entire/settings.json.
+// loadEntireSettingsValidated is LoadEntireSettings for the commands that
+// report configuration errors (status, configure): it also rejects values the
+// loader accepts so that hooks keep working, such as an invalid
+// issue_key_pattern (which only turns issue linking off).
+func loadEntireSettingsValidated(ctx context.Context) (*settings.EntireSettings, error) {
+	s, err := LoadEntireSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.IssueKeyRegexp(); err != nil {
+		return nil, fmt.Errorf("invalid settings: %w", err)
+	}
+	return s, nil
+}
+
 func SaveEntireSettings(ctx context.Context, s *settings.EntireSettings) error {
 	if err := settings.Save(ctx, s); err != nil {
 		return fmt.Errorf("saving settings: %w", err)

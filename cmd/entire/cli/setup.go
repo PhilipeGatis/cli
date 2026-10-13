@@ -862,6 +862,13 @@ Examples:
 				fmt.Fprintln(cmd.ErrOrStderr(), "Entire is not configured in this repository yet. Run 'entire enable' first.")
 				return NewSilentError(errors.New("entire not configured"))
 			}
+			// The loader accepts an invalid issue_key_pattern (hooks keep
+			// working); configure refuses to write on top of one.
+			if s, loadErr := LoadEntireSettings(ctx); loadErr == nil {
+				if _, reErr := s.IssueKeyRegexp(); reErr != nil {
+					return fmt.Errorf("invalid settings: %w", reErr)
+				}
+			}
 
 			if hasStrategyFlags(cmd) {
 				if err := updateStrategyOptions(ctx, cmd.OutOrStdout(), opts); err != nil {

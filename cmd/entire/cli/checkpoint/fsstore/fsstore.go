@@ -128,6 +128,8 @@ func (s *Store) Write(_ context.Context, req cp.WriteRequest) error {
 		return s.backfillTranscript(cp.UpdateOptions(r))
 	case cp.SessionSummary:
 		return s.writeSessionSummary(r)
+	case cp.SessionIssueKey:
+		return s.writeSessionIssueKey(r)
 	default:
 		return fmt.Errorf("fsstore: unsupported write request %T", req)
 	}
@@ -190,6 +192,20 @@ func (s *Store) writeSessionSummary(r cp.SessionSummary) error {
 		return fmt.Errorf("fsstore: cannot set summary for unknown checkpoint %s", r.CheckpointID)
 	}
 	sc.Sessions[len(sc.Sessions)-1].Metadata.Summary = checkpoint.RedactSummary(r.Summary)
+	return s.save(sc)
+}
+
+func (s *Store) writeSessionIssueKey(r cp.SessionIssueKey) error {
+	sc, err := s.load(r.CheckpointID)
+	if err != nil {
+		return err
+	}
+	if sc == nil || len(sc.Sessions) == 0 {
+		return fmt.Errorf("fsstore: cannot set issue key for unknown checkpoint %s", r.CheckpointID)
+	}
+	for i := range sc.Sessions {
+		sc.Sessions[i].Metadata.IssueKey = r.IssueKey
+	}
 	return s.save(sc)
 }
 
@@ -398,6 +414,7 @@ func metadataFromWriteOptions(opts cp.WriteOptions) cp.Metadata {
 		Strategy:                    opts.Strategy,
 		CreatedAt:                   createdAt,
 		Branch:                      opts.Branch,
+		IssueKey:                    opts.IssueKey,
 		CheckpointsCount:            opts.CheckpointsCount,
 		SaveStepCount:               opts.SaveStepCount,
 		FilesTouched:                checkpoint.NormalizeFilesTouched(opts.FilesTouched),

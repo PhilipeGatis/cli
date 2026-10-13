@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -178,6 +179,18 @@ type EntireSettings struct {
 	// "always" = auto-link without prompting, "prompt" = ask on each commit.
 	// Defaults to "prompt" (preserves existing user behavior).
 	CommitLinking string `json:"commit_linking,omitempty"`
+
+	// IssueKeyPattern is an optional Go (RE2) regular expression that extracts
+	// an issue-tracker key (e.g. `[A-Z][A-Z0-9]+-\d+` for Jira/Linear) from the
+	// branch name, falling back to the commit subject. When the pattern has a
+	// capture group, group 1 is the key; otherwise the whole match is. When a
+	// checkpoint trailer is written, the key is recorded as an Entire-Issue
+	// trailer and as issue_key in the checkpoint metadata. Empty (the default)
+	// disables the feature; settings.local.json can set "" to turn off a
+	// project pattern. An invalid pattern does NOT fail settings load (that
+	// would disable every Entire hook): it disables only issue linking, and
+	// IssueKeyRegexp reports why. Use IssueKeyRegexp to read it.
+	IssueKeyPattern string `json:"issue_key_pattern,omitempty"`
 
 	// ExternalAgents enables discovery and registration of external agent
 	// plugins (entire-agent-* binaries on $PATH). Defaults to false.
@@ -448,6 +461,23 @@ func (s *EntireSettings) GetCommitLinking() string {
 		return s.CommitLinking
 	}
 	return CommitLinkingPrompt
+}
+
+// IssueKeyRegexp returns the compiled issue_key_pattern: (nil, nil) when the
+// setting is empty, (nil, err) when it is not a valid Go regular expression.
+// Settings load accepts an invalid pattern so that a typo in the shared
+// settings.json turns off issue linking only, not every hook; callers that
+// link issues report err (commit hooks warn, `entire doctor` and
+// `entire status` report it).
+func (s *EntireSettings) IssueKeyRegexp() (*regexp.Regexp, error) {
+	if s == nil || s.IssueKeyPattern == "" {
+		return nil, nil //nolint:nilnil // no pattern => issue linking off, not an error
+	}
+	re, err := regexp.Compile(s.IssueKeyPattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid issue_key_pattern `%s`: %w", s.IssueKeyPattern, err)
+	}
+	return re, nil
 }
 
 // SummaryTimeoutValue returns the configured hard deadline for
@@ -1383,6 +1413,10 @@ func mergeScalarFields(settings *EntireSettings, raw map[string]json.RawMessage)
 	if err := mergeRawStringNonEmpty(raw, "review_fix_agent", &settings.ReviewFixAgent); err != nil {
 		return err
 	}
+	// Present-but-empty is honored: a local "" turns off a project pattern.
+	if err := mergeRawString(raw, "issue_key_pattern", &settings.IssueKeyPattern); err != nil {
+		return err
+	}
 	if err := mergeRawInt(raw, "summary_timeout_seconds", &settings.SummaryTimeoutSeconds); err != nil {
 		return err
 	}
@@ -1446,6 +1480,16 @@ func mergeRawStringNonEmpty(raw map[string]json.RawMessage, key string, dst *str
 		*dst = s
 	}
 	return nil
+}
+
+// mergeRawString overwrites dst whenever key is present, including with "",
+// so an override layer can clear a value; mergeRawStringNonEmpty ignores "".
+func mergeRawString(raw map[string]json.RawMessage, key string, dst *string) error {
+	v, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	return unmarshalField(key, v, dst)
 }
 
 func mergeRawInt(raw map[string]json.RawMessage, key string, dst *int) error {

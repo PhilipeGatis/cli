@@ -93,7 +93,7 @@ func runStatus(ctx context.Context, w io.Writer, detailed, jsonOutput bool) erro
 	}
 
 	// Short output: just show the effective/merged state
-	s, err := LoadEntireSettings(ctx)
+	s, err := loadEntireSettingsValidated(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
@@ -135,7 +135,7 @@ func writeAgentHelpHint(w io.Writer, sty statusStyles) {
 // runStatusDetailed shows the effective status plus detailed status for each settings file.
 func runStatusDetailed(ctx context.Context, w io.Writer, sty statusStyles, settingsPath, localSettingsPath string, projectExists, localExists bool) error {
 	// First show the effective/merged status
-	effectiveSettings, err := LoadEntireSettings(ctx)
+	effectiveSettings, err := loadEntireSettingsValidated(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
@@ -1229,7 +1229,7 @@ func runStatusJSON(ctx context.Context, w io.Writer) error {
 		return writeJSON(statusJSON{Error: "not set up"})
 	}
 
-	s, err := LoadEntireSettings(ctx)
+	s, err := loadEntireSettingsValidated(ctx)
 	if err != nil {
 		return writeJSON(statusJSON{Error: fmt.Sprintf("failed to load settings: %v", err)})
 	}

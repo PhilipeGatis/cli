@@ -140,19 +140,26 @@ func saveCommitLinkingAlways(ctx context.Context) error {
 
 // CommitMsg is called by the git commit-msg hook after the user edits the message.
 // If the message contains only our trailer (no actual user content), strip it
-// so git will abort the commit due to empty message.
-
-func (s *ManualCommitStrategy) CommitMsg(_ context.Context, commitMsgFile string) error { //nolint:unparam // error return is part of the hook contract; callers check it
+// so git will abort the commit due to empty message. Otherwise it completes
+// the Entire-Issue subject fallback prepare-commit-msg marked for the editor
+// flow (see issue_key.go for when an issue trailer is written).
+func (s *ManualCommitStrategy) CommitMsg(ctx context.Context, commitMsgFile string) error { //nolint:unparam // error return is part of the hook contract; callers check it
 	content, err := os.ReadFile(commitMsgFile) //nolint:gosec // Path comes from git hook
 	if err != nil {
 		return nil //nolint:nilerr // Hook must be silent on failure
 	}
 
-	message := string(content)
+	original := string(content)
+	message, marked := takeIssueSubjectMarker(original)
 
 	// Check if our trailer is present (ParseCheckpoint validates format, so found==true means valid)
 	if _, found := trailers.ParseCheckpoint(message); !found {
-		// No trailer, nothing to do
+		// No trailer, nothing to do beyond dropping our marker comment.
+		if marked {
+			if err := os.WriteFile(commitMsgFile, []byte(message), 0o600); err != nil { //nolint:gosec // path from git hook arg
+				return nil //nolint:nilerr // Hook must be silent on failure
+			}
+		}
 		return nil
 	}
 
@@ -161,6 +168,13 @@ func (s *ManualCommitStrategy) CommitMsg(_ context.Context, commitMsgFile string
 		// No user content - strip the trailer so git aborts
 		message = stripCheckpointTrailer(message)
 		if err := os.WriteFile(commitMsgFile, []byte(message), 0o600); err != nil {
+			return nil //nolint:nilerr // Hook must be silent on failure
+		}
+		return nil
+	}
+
+	if message = applyIssueSubjectFallback(ctx, message, marked); message != original {
+		if err := os.WriteFile(commitMsgFile, []byte(message), 0o600); err != nil { //nolint:gosec // path from git hook arg
 			return nil //nolint:nilerr // Hook must be silent on failure
 		}
 	}
@@ -253,9 +267,10 @@ func parsePostRewritePairs(r io.Reader) ([]rewritePair, error) {
 	return pairs, nil
 }
 
-// hasUserContent checks if the message has any content besides comments and our trailer.
+// hasUserContent checks if the message has any content besides comments and our trailers.
 func hasUserContent(message string) bool {
 	trailerPrefix := trailers.CheckpointTrailerKey + ":"
+	issuePrefix := trailers.IssueTrailerKey + ":"
 	for _, line := range strings.Split(message, "\n") {
 		trimmed := strings.TrimSpace(line)
 		// Skip empty lines
@@ -266,8 +281,8 @@ func hasUserContent(message string) bool {
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		// Skip our trailer line
-		if strings.HasPrefix(trimmed, trailerPrefix) {
+		// Skip our trailer lines
+		if strings.HasPrefix(trimmed, trailerPrefix) || strings.HasPrefix(trimmed, issuePrefix) {
 			continue
 		}
 		// Found user content
@@ -276,12 +291,15 @@ func hasUserContent(message string) bool {
 	return false
 }
 
-// stripCheckpointTrailer removes the Entire-Checkpoint trailer line from the message.
+// stripCheckpointTrailer removes the Entire-Checkpoint trailer line (and an
+// Entire-Issue line, which only accompanies it) from the message.
 func stripCheckpointTrailer(message string) string {
 	trailerPrefix := trailers.CheckpointTrailerKey + ":"
+	issuePrefix := trailers.IssueTrailerKey + ":"
 	var result []string
 	for _, line := range strings.Split(message, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), trailerPrefix) {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, trailerPrefix) && !strings.HasPrefix(trimmed, issuePrefix) {
 			result = append(result, line)
 		}
 	}
@@ -365,6 +383,16 @@ func GitOperationInProgress(ctx context.Context) string {
 //
 
 func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFile string, source string) error {
+	before, readErr := os.ReadFile(commitMsgFile) //nolint:gosec // commitMsgFile is provided by git hook
+	err := s.prepareCommitMsg(ctx, commitMsgFile, source)
+	if readErr == nil {
+		// Only offers a key when the call above added the checkpoint trailer.
+		offerIssueTrailer(ctx, commitMsgFile, source, string(before))
+	}
+	return err
+}
+
+func (s *ManualCommitStrategy) prepareCommitMsg(ctx context.Context, commitMsgFile string, source string) error {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 
 	// Skip during rebase, cherry-pick, or revert operations
@@ -991,6 +1019,18 @@ func (h *postCommitActionHandler) searchProbeGate() func() bool {
 	return func() bool { return h.condensedTelemetry.searchProbeAllowed(h.ctx) }
 }
 
+// issueKey returns the commit's final Entire-Issue trailer value (see
+// issue_key.go for when one is written), or "" when it has none. Metadata
+// mirrors the trailer rather than re-extracting, so a key the user edited or
+// removed in the message is what gets recorded.
+func (h *postCommitActionHandler) issueKey() string {
+	if h.commit == nil {
+		return ""
+	}
+	key, _ := trailers.ParseIssue(h.commit.Message)
+	return key
+}
+
 func (h *postCommitActionHandler) HandleCondense(state *session.State) error {
 	logCtx := logging.WithComponent(h.ctx, "checkpoint")
 	hasLiveTask := idleWithLiveTaskRecord(state, time.Now())
@@ -1011,6 +1051,7 @@ func (h *postCommitActionHandler) HandleCondense(state *session.State) error {
 			repoDir:            h.repoDir,
 			searchProbeAllowed: h.searchProbeGate(),
 			storedRoot:         h.storedRoot,
+			issueKey:           h.issueKey(),
 		})
 	} else {
 		h.s.updateBaseCommitIfChanged(h.ctx, state, h.newHead, h.repoDir)
@@ -1036,6 +1077,7 @@ func (h *postCommitActionHandler) HandleCondenseIfFilesTouched(state *session.St
 			repoDir:            h.repoDir,
 			searchProbeAllowed: h.searchProbeGate(),
 			storedRoot:         h.storedRoot,
+			issueKey:           h.issueKey(),
 		})
 	} else {
 		h.s.updateBaseCommitIfChanged(h.ctx, state, h.newHead, h.repoDir)
@@ -1370,6 +1412,14 @@ func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error {
 	processSessionsLoop.End()
 
 	logUnclaimedCheckpointTrailer(logCtx, checkpointID, sessions, trailerOwned, isRebase)
+
+	// A checkpoint this commit kept (an amend) may carry an issue_key the
+	// amended trailer no longer says; condensation rewrote at most the
+	// sessions it condensed.
+	if targetPreexisting && trailerOwned && !isRebase {
+		key, _ := trailers.ParseIssue(commit.Message)
+		s.syncIssueKeyMetadata(ctx, repo, checkpointID, key)
+	}
 
 	if staleEnded >= staleEndedSessionWarnThreshold {
 		warnStaleEndedSessions(ctx, staleEnded)

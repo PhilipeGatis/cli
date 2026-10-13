@@ -159,6 +159,19 @@ type WriteOptions struct {
 	// same checkpoint keeps the existing entries and adds new ones.
 	LinkedCommits []LinkedCommit
 
+	// IssueKey is the issue-tracker key (e.g. "PROJ-123") of the commit this
+	// checkpoint was condensed for, copied from its final Entire-Issue
+	// trailer (an amend that edits or removes the trailer rewrites it via
+	// SessionIssueKey). Set only when the project configures
+	// issue_key_pattern; empty otherwise, which is why Metadata.IssueKey is
+	// omitempty. The trailer is the durable, user-visible link; this copy lets
+	// local readers find the key once the commit is unreachable (deleted
+	// branch, squash merge that dropped trailers). Never set on imported
+	// checkpoints (an import has no branch or commit message to extract it
+	// from), and not served by the Entire API, so `explain --repo` reads it
+	// empty. Older CLIs that rewrite a session's metadata drop it.
+	IssueKey string
+
 	// Transcript is the session transcript content (full.jsonl).
 	// Must be pre-redacted (via redact.JSONLBytes or redact.AlreadyRedacted for trusted sources).
 	Transcript redact.RedactedBytes
@@ -437,7 +450,10 @@ type Metadata struct {
 	// CommitSHA anchors an imported checkpoint to an existing commit; empty for
 	// non-imported checkpoints, which link via the Entire-Checkpoint trailer.
 	// See WriteOptions.CommitSHA for the full semantics.
-	CommitSHA        string `json:"commit_sha,omitempty"`
+	CommitSHA string `json:"commit_sha,omitempty"`
+	// IssueKey: issue-tracker key from the commit's Entire-Issue trailer; see
+	// WriteOptions.IssueKey.
+	IssueKey         string `json:"issue_key,omitempty"`
 	CheckpointsCount int    `json:"checkpoints_count"`
 	// SaveStepCount is the number of SaveStep-recorded steps for this session.
 	// Honest "real checkpoint work happened" signal (0 = commit-only/fallback

@@ -284,6 +284,34 @@ func (s *treeWriter) applySummaryBackfill(ctx context.Context, existing *object.
 	return subtree, existingMetadata.SessionID, nil
 }
 
+// applyIssueKeyBackfill sets issue_key on every session's metadata in the
+// checkpoint's current subtree, returning the new subtree hash. Returns
+// ErrCheckpointNotFound when the checkpoint has no sessions.
+func (s *treeWriter) applyIssueKeyBackfill(ctx context.Context, existing *object.Tree, basePath, issueKey string) (plumbing.Hash, error) {
+	entries, err := s.flattenExisting(existing, basePath)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	entry, exists := entries[checkpointSubtreePath(basePath, paths.MetadataFileName)]
+	if !exists {
+		return plumbing.ZeroHash, ErrCheckpointNotFound
+	}
+	checkpointSummary, err := s.readSummaryFromBlob(entry.Hash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to read checkpoint summary: %w", err)
+	}
+	if len(checkpointSummary.Sessions) == 0 {
+		return plumbing.ZeroHash, ErrCheckpointNotFound
+	}
+	for i := range checkpointSummary.Sessions {
+		sessionDir := checkpointSubtreePath(basePath, strconv.Itoa(i))
+		if err := s.updateSessionMetadata(sessionDir, entries, func(m *Metadata) { m.IssueKey = issueKey }); err != nil {
+			return plumbing.ZeroHash, err
+		}
+	}
+	return s.buildCheckpointSubtree(ctx, entries, basePath)
+}
+
 // applyTranscriptBackfill replaces a session's transcript, prompts, and skill
 // events on the checkpoint's current subtree, returning the new subtree hash.
 // Returns ErrCheckpointNotFound when the checkpoint has no sessions yet.
@@ -705,6 +733,7 @@ func (s *treeWriter) writeSessionToSubdirectory(ctx context.Context, opts WriteO
 		CreatedAt:                   checkpointCreatedAt(opts),
 		Branch:                      opts.Branch,
 		CommitSHA:                   opts.CommitSHA,
+		IssueKey:                    opts.IssueKey,
 		CheckpointsCount:            opts.CheckpointsCount,
 		SaveStepCount:               opts.SaveStepCount,
 		FilesTouched:                filesTouched,
@@ -1605,6 +1634,38 @@ func (s *GitStore) backfillSummary(ctx context.Context, checkpointID id.Checkpoi
 
 		authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
 		commitMsg := fmt.Sprintf("Update summary for checkpoint %s (session: %s)", checkpointID, sessionID)
+		return CreateCommit(ctx, s.repo, newTreeHash, parentHash, commitMsg, authorName, authorEmail)
+	})
+}
+
+// backfillIssueKey sets issue_key on every session of an existing checkpoint
+// (empty clears it). Returns ErrCheckpointNotFound if the checkpoint doesn't
+// exist.
+func (s *GitStore) backfillIssueKey(ctx context.Context, checkpointID id.CheckpointID, issueKey string) error {
+	if err := ctx.Err(); err != nil {
+		return err //nolint:wrapcheck // Propagating context cancellation
+	}
+
+	// Backfills require the branch to exist; a miss must not create it.
+	if err := s.requireSessionsBranch(); err != nil {
+		return err
+	}
+
+	return s.updatePrimaryRef(ctx, func(parentHash, rootTreeHash plumbing.Hash) (plumbing.Hash, error) {
+		existing, err := s.subtreeObjAt(rootTreeHash, checkpointID.Path())
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		checkpointSubtree, err := s.applyIssueKeyBackfill(ctx, existing, checkpointID.Path()+"/", issueKey)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		newTreeHash, err := s.spliceCheckpointSubtree(rootTreeHash, checkpointID, checkpointSubtree)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
+		commitMsg := fmt.Sprintf("Update issue key for checkpoint %s", checkpointID)
 		return CreateCommit(ctx, s.repo, newTreeHash, parentHash, commitMsg, authorName, authorEmail)
 	})
 }

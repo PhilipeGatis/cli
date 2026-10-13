@@ -99,6 +99,11 @@ type condenseOpts struct {
 	// so it can also release the copy afterwards. nil means CondenseSession
 	// resolves it itself, once.
 	storedRoot *os.Root
+
+	// issueKey is the Entire-Issue trailer value of the commit being
+	// condensed, recorded as the session metadata's issue_key. Only PostCommit
+	// sets it: the other condensation paths have no commit to read it from.
+	issueKey string
 }
 
 // redactSessionJSONLBytes runs the regex-only redaction pipeline (the
@@ -659,6 +664,7 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 		ctx, repo, state, sessionData, redactedTranscript, extractedAssets,
 		taskPayloads, checkpointID,
 	)
+	writeOpts.IssueKey = o.issueKey
 
 	writeV1Start := time.Now()
 	writeCtx, writeCommittedSpan := perf.Start(ctx, "write_committed_v1")

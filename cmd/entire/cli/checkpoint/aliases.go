@@ -48,11 +48,12 @@ type (
 	Writer           = apicheckpoint.Writer
 	WriteRequest     = apicheckpoint.WriteRequest
 	// Write request union: all session-level (Session, ReservedSession,
-	// SessionTranscript, SessionSummary).
+	// SessionTranscript, SessionSummary, SessionIssueKey).
 	Session           = apicheckpoint.Session
 	ReservedSession   = apicheckpoint.ReservedSession
 	SessionTranscript = apicheckpoint.SessionTranscript
 	SessionSummary    = apicheckpoint.SessionSummary
+	SessionIssueKey   = apicheckpoint.SessionIssueKey
 )
 
 // Sentinel errors (re-exported so errors.Is keeps working across packages).

@@ -58,8 +58,8 @@ type PersistentStore interface {
 // unexported isWriteRequest marker. A store dispatches on the concrete type; a
 // mirror/fan-out store forwards the same value to each backend's Write.
 //
-// All four requests are session-level (Session, ReservedSession,
-// SessionTranscript, SessionSummary). Adding a write operation is a new request type plus one dispatch case in every
+// All requests are session-level (Session, ReservedSession,
+// SessionTranscript, SessionSummary, SessionIssueKey). Adding a write operation is a new request type plus one dispatch case in every
 // backend. The Store interface stays unchanged, so seam tests must exercise the
 // full union because Go does not exhaustively check type switches.
 type WriteRequest interface {
@@ -86,10 +86,19 @@ type SessionSummary struct {
 	Summary      *Summary
 }
 
+// SessionIssueKey sets issue_key on every session of the checkpoint (an empty
+// IssueKey clears it), so the metadata follows a commit's Entire-Issue trailer
+// after an amend edits or removes it. (session-level)
+type SessionIssueKey struct {
+	CheckpointID id.CheckpointID
+	IssueKey     string
+}
+
 func (Session) isWriteRequest()           {}
 func (ReservedSession) isWriteRequest()   {}
 func (SessionTranscript) isWriteRequest() {}
 func (SessionSummary) isWriteRequest()    {}
+func (SessionIssueKey) isWriteRequest()   {}
 
 // Writer is the persistent-store write surface: a single Write that accepts any
 // WriteRequest. It is the natural type for mirror fan-out.

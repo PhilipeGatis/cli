@@ -100,6 +100,27 @@ func TestStore_SessionSummary(t *testing.T) {
 	assert.Equal(t, "do a thing", meta.Summary.Intent)
 }
 
+func TestStore_SessionIssueKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := New(t.TempDir())
+	cid := id.MustCheckpointID("a1b2c3d4e5f6")
+
+	for _, sid := range []string{"sess-1", "sess-2"} {
+		require.NoError(t, store.Write(ctx, cp.Session{
+			CheckpointID: cid, SessionID: sid, Strategy: "manual-commit", IssueKey: "OLD-1",
+			Transcript: redact.AlreadyRedacted([]byte("t")),
+		}))
+	}
+	require.NoError(t, store.Write(ctx, cp.SessionIssueKey{CheckpointID: cid, IssueKey: "NEW-2"}))
+	for i := range 2 {
+		meta, err := store.ReadSessionMetadata(ctx, cid, i)
+		require.NoError(t, err)
+		assert.Equal(t, "NEW-2", meta.IssueKey)
+	}
+	require.Error(t, store.Write(ctx, cp.SessionIssueKey{CheckpointID: id.MustCheckpointID("000000000000")}))
+}
+
 func TestStore_ListReturnsCheckpoints(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

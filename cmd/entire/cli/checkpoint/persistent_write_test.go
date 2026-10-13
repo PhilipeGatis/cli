@@ -67,6 +67,29 @@ func TestWrite_DispatchesEachRequest(t *testing.T) {
 	if meta := readLatestSessionMetadata(t, repo, cpID); meta.Summary == nil || meta.Summary.Intent != "why" {
 		t.Errorf("SessionSummary not applied: %+v", meta.Summary)
 	}
+
+	// SessionIssueKey sets issue_key without clobbering the summary.
+	if err := store.Write(ctx, SessionIssueKey{CheckpointID: cpID, IssueKey: "PROJ-7"}); err != nil {
+		t.Fatalf("Write(SessionIssueKey) error = %v", err)
+	}
+	if meta := readLatestSessionMetadata(t, repo, cpID); meta.IssueKey != "PROJ-7" || meta.Summary == nil {
+		t.Errorf("SessionIssueKey not applied (or summary lost): %+v", meta)
+	}
+}
+
+// TestWrite_BackfillIssueKeyNotFound verifies error propagation through dispatch.
+func TestWrite_BackfillIssueKeyNotFound(t *testing.T) {
+	t.Parallel()
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo, DefaultV1Refs())
+	if err := store.ensureSessionsBranch(context.Background()); err != nil {
+		t.Fatalf("ensureSessionsBranch() error = %v", err)
+	}
+
+	err := store.Write(context.Background(), SessionIssueKey{CheckpointID: id.MustCheckpointID("000000000000"), IssueKey: "X-1"})
+	if !errors.Is(err, ErrCheckpointNotFound) {
+		t.Errorf("Write(SessionIssueKey) error = %v, want ErrCheckpointNotFound", err)
+	}
 }
 
 // TestWrite_BackfillSummaryNotFound verifies error propagation through dispatch.

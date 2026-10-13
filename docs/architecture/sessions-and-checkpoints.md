@@ -81,7 +81,7 @@ type PersistentStore interface {
     Read(ctx, checkpointID id.CheckpointID) (*CheckpointSummary, error)
     List(ctx) ([]CheckpointInfo, error)
     ReadSessionContent(ctx, checkpointID id.CheckpointID, sessionIndex int) (*SessionContent, error)
-    Write(ctx, req WriteRequest) error    // Session / ReservedSession / SessionTranscript / SessionSummary
+    Write(ctx, req WriteRequest) error    // Session / ReservedSession / SessionTranscript / SessionSummary / SessionIssueKey
     // ...session reads
 }
 ```
@@ -802,6 +802,22 @@ reconfiguring:
 1. **User commit trailer**:
    - `Entire-Checkpoint: a3b2c4d5e6f7` added to user's commit message
    - Added by `prepare-commit-msg` hook (user can remove)
+   - Optional `Entire-Issue: PROJ-123` on the line after it, only when the
+     project sets `issue_key_pattern` (capture group 1 if the pattern has one,
+     else the whole match). `prepare-commit-msg` offers it only when it is the
+     one adding the `Entire-Checkpoint` trailer, so an amend or reword never
+     re-adds a key the user deleted: the branch name's key, else (for `-m`/`-F`)
+     the subject's. In the editor flow without a branch key it leaves a marker
+     comment that `commit-msg`, the first hook to see the final subject,
+     replaces with the subject's key (`--no-verify` skips only that fallback).
+     Only the final trailer block counts (git interpret-trailers rules, no
+     indented or quoted lines), so a `merge --squash` body quoting other
+     commits' trailers is ignored. Post-commit copies the final trailer's value
+     into every condensed session's `issue_key` (omitempty; an older CLI that
+     rewrites the metadata drops it), and an amend that keeps the checkpoint
+     but edits or removes the key rewrites it (`SessionIssueKey`).
+     An invalid pattern loads (so hooks keep working) but turns off issue
+     linking; hooks warn on stderr, `doctor` and `status` report it.
 
 2. **Directory sharding** on `entire/checkpoints/v1`:
    - Path: `<id[:2]>/<id[2:]>/` (e.g., `a3/b2c4d5e6f7/`)

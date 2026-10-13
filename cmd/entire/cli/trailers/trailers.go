@@ -29,6 +29,12 @@ const (
 	// This trailer survives git amend and rebase operations.
 	CheckpointTrailerKey = "Entire-Checkpoint"
 
+	// IssueTrailerKey links a commit to an issue-tracker key (e.g. "PROJ-123")
+	// extracted with the project's issue_key_pattern setting. Written next to
+	// Entire-Checkpoint only when that setting is configured.
+	// Format: a single whitespace-free token.
+	IssueTrailerKey = "Entire-Issue"
+
 	// AgentTrailerKey identifies the agent that created a checkpoint.
 	// Format: human-readable agent name e.g. "Claude Code", "Cursor"
 	AgentTrailerKey = "Entire-Agent"

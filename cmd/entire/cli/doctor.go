@@ -74,7 +74,11 @@ Checks performed:
      'entire checkpoint explain --generate', 'entire dispatch' and
      'entire runner setup' fail. Reports the file to change; does not rewrite it.
 
-  7. Legacy shadow branches: report entire/<commit>-<worktree> branches older
+  7. Issue key pattern: warn when issue_key_pattern is not a valid Go
+     regular expression. Commits still work and are still linked to sessions,
+     but no Entire-Issue trailer or issue_key is recorded until it is fixed.
+
+  8. Legacy shadow branches: report entire/<commit>-<worktree> branches older
      versions wrote at every turn. They hold full snapshots of the working
      tree and nothing reads them anymore. Fix with 'entire doctor --force',
      which deletes only the branches; a later 'git gc' frees the space once
@@ -84,7 +88,7 @@ Checks performed:
      checked out in a worktree is left alone. Bare entire/<commit> branches
      are only pointed at ('entire clean --all --dry-run'), never deleted.
 
-  8. Stuck sessions: sessions stuck in ACTIVE or ENDED phase that need cleanup.
+  9. Stuck sessions: sessions stuck in ACTIVE or ENDED phase that need cleanup.
 
 A session is considered stuck if:
   - It is in ACTIVE phase with no interaction for over 1 hour
@@ -201,6 +205,10 @@ func runSessionsFix(cmd *cobra.Command, force bool) error {
 	// A configured summary provider that cannot generate text. After the hook
 	// checks: it breaks three commands, not capture, so it is the milder fault.
 	checkSummaryProvider(cmd)
+
+	// An invalid issue_key_pattern only turns issue linking off (settings
+	// still load), so nothing else would say so.
+	checkIssueKeyPattern(cmd)
 
 	// Where checkpoints land, when the repo's remotes make that ambiguous.
 	printCheckpointDestinationNote(ctx, cmd.OutOrStdout(), "Checkpoint destination: REVIEW")
@@ -1520,6 +1528,23 @@ func checkSummaryProvider(cmd *cobra.Command) {
 		fmt.Fprintln(w, line)
 	}
 	fmt.Fprintln(w, "  No `entire` command writes this value, so it was hand-edited or written by an agent.")
+}
+
+// checkIssueKeyPattern reports an issue_key_pattern that is not a valid
+// regular expression. Settings load accepts it so the hooks keep working;
+// commit hooks warn on stderr, and this is the place to find out up front.
+func checkIssueKeyPattern(cmd *cobra.Command) {
+	s, err := LoadEntireSettings(cmd.Context())
+	if err != nil {
+		return // a settings file that will not load is reported louder elsewhere
+	}
+	if _, reErr := s.IssueKeyRegexp(); reErr != nil {
+		w := cmd.OutOrStdout()
+		fmt.Fprintln(w, "Issue key pattern: INVALID")
+		fmt.Fprintf(w, "  %v\n", reErr)
+		fmt.Fprintln(w, "  Commits are still linked to sessions, but no Entire-Issue trailer or issue_key is recorded.")
+		fmt.Fprintln(w, "  Fix: correct issue_key_pattern in .entire/settings.json (or set it to \"\" in settings.local.json).")
+	}
 }
 
 // summaryProviderSourceLayer reports which settings file supplies the effective

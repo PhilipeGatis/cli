@@ -282,6 +282,8 @@ func (r *apiCheckpointReader) ReadSessionMetadataAndPrompts(ctx context.Context,
 		Model:            s.Model,
 		Kind:             s.Kind,
 		SkillEvents:      s.SkillEvents,
+		// IssueKey stays empty: the envelope carries no issue_key and only the
+		// commit subject (not the message, so no Entire-Issue trailer).
 	}
 	// Absent upstream means "not recorded", which is exactly how a local
 	// checkpoint written before the field existed reads: GetTranscriptStart()
