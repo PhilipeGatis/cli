@@ -989,6 +989,8 @@ func (env *TestEnv) gitCommitWithHooks(message string, simulateTTY bool, files .
 		// Don't fail - hook may silently succeed
 	}
 
+	env.runCommitMsgHook(msgFile)
+
 	// Read the modified message
 	modifiedMsg, err := os.ReadFile(msgFile)
 	if err != nil {
@@ -1029,6 +1031,19 @@ func (env *TestEnv) gitCommitWithHooks(message string, simulateTTY bool, files .
 	}
 }
 
+// runCommitMsgHook runs the commit-msg hook on msgFile, as git does after
+// prepare-commit-msg and the editor (unless --no-verify). Like the other hook
+// runs here, a hook failure is logged, not fatal.
+func (env *TestEnv) runCommitMsgHook(msgFile string) {
+	env.T.Helper()
+	cmd := exec.CommandContext(env.T.Context(), getTestBinary(), "hooks", "git", "commit-msg", msgFile)
+	cmd.Dir = env.RepoDir
+	cmd.Env = env.gitHookEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Logf("commit-msg output: %s", output)
+	}
+}
+
 func (env *TestEnv) gitHookEnv(extra ...string) []string {
 	envVars := append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+env.OpenCodeProjectDir,
@@ -1066,6 +1081,7 @@ func (env *TestEnv) GitCommitAmendWithHooks(message string, files ...string) {
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg (amend) output: %s", output)
 	}
+	env.runCommitMsgHook(msgFile)
 
 	// Read the modified message
 	modifiedMsg, err := os.ReadFile(msgFile)
@@ -1247,6 +1263,7 @@ func (env *TestEnv) gitCommitStagedWithHooks(message string, simulateTTY bool) {
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 	}
+	env.runCommitMsgHook(msgFile)
 
 	// Read the modified message
 	modifiedMsg, err := os.ReadFile(msgFile)
