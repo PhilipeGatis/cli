@@ -816,6 +816,8 @@ reconfiguring:
      into every condensed session's `issue_key` (omitempty; an older CLI that
      rewrites the metadata drops it), and an amend that keeps the checkpoint
      but edits or removes the key rewrites it (`SessionIssueKey`).
+     `checkpoint list --issue` searches all branches and the whole store:
+     trailer first for checkpoints on reachable commits, metadata otherwise.
      An invalid pattern loads (so hooks keep working) but turns off issue
      linking; hooks warn on stderr, `doctor` and `status` report it.
 

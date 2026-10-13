@@ -797,6 +797,9 @@ type branchCheckpointJSON struct {
 	IsLogsOnly       bool      `json:"is_logs_only,omitempty"`
 	SessionCount     int       `json:"session_count,omitempty"`
 	SessionIDs       []string  `json:"session_ids,omitempty"`
+	// IssueKey is the linked issue-tracker key: the commit's Entire-Issue
+	// trailer, else the checkpoint metadata's issue_key (issue_key_pattern).
+	IssueKey string `json:"issue_key,omitempty"`
 }
 
 // runExplainListJSON emits a JSON array of branch checkpoints, optionally
@@ -838,6 +841,13 @@ func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter st
 		truncated = true
 	}
 
+	return writeCheckpointListJSON(w, errW, points, sessionFilter, truncated, limit)
+}
+
+// writeCheckpointListJSON encodes points (already capped at limit) as the
+// flat `checkpoint list --json` array, applying the session filter, and notes
+// truncation on errW.
+func writeCheckpointListJSON(w, errW io.Writer, points []strategy.PendingCheckpoint, sessionFilter string, truncated bool, limit int) error {
 	out := make([]branchCheckpointJSON, 0, len(points))
 	for _, p := range points {
 		if sessionFilter != "" && !checkpointMatchesSessionFilter(p, sessionFilter) {
@@ -852,6 +862,7 @@ func runExplainListJSON(ctx context.Context, w, errW io.Writer, sessionFilter st
 			IsLogsOnly:       p.IsLogsOnly,
 			SessionCount:     p.SessionCount,
 			SessionIDs:       p.SessionIDs,
+			IssueKey:         p.IssueKey,
 		}
 		if !p.CheckpointID.IsEmpty() {
 			entry.CheckpointID = p.CheckpointID.String()

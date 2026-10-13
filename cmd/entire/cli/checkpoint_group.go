@@ -74,6 +74,7 @@ func newCheckpointSearchCmd() *cobra.Command {
 // see issue #1767.
 func newCheckpointListCmd() *cobra.Command {
 	var sessionFlag string
+	var issueFlag string
 	var noPagerFlag bool
 	var jsonFlag bool
 	var pendingFlag bool
@@ -114,7 +115,17 @@ id, "is_next_checkpoint": true, and a "next_checkpoint" object:
 The arrays are always present, possibly empty.
 
 Optionally filter condensed checkpoints by session ID with --session
-(not applicable with --pending).`,
+(not applicable with --pending).
+
+--issue KEY lists the checkpoints linked to an issue-tracker key (written when
+the project sets issue_key_pattern), across ALL branches rather than the
+current one, so sessions stay findable after their branch is merged or
+deleted. It searches the whole checkpoint store (the issue_key metadata) plus
+commits reachable from local and remote-tracking branches (the Entire-Issue
+trailer, which wins over metadata for the same checkpoint). The match is exact
+and case-insensitive; results are newest first, capped like the branch list.
+Each --json element carries issue_key when one is linked. Not applicable with
+--pending.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if checkDisabledGuard(cmd.Context(), cmd.OutOrStdout()) {
 				return nil
@@ -128,12 +139,20 @@ Optionally filter condensed checkpoints by session ID with --session
 			if pendingFlag && sessionFlag != "" {
 				return errors.New("--session cannot be combined with --pending")
 			}
+			// Pending work has no commit yet, so it carries no issue link.
+			if pendingFlag && issueFlag != "" {
+				return errors.New("--issue cannot be combined with --pending")
+			}
 
 			switch {
 			case pendingFlag && jsonFlag:
 				return runCheckpointPendingListJSON(ctx, w)
 			case pendingFlag:
 				return runCheckpointPendingListHuman(ctx, w)
+			case issueFlag != "" && jsonFlag:
+				return runIssueCheckpointListJSON(ctx, w, errW, sessionFlag, issueFlag, 0)
+			case issueFlag != "":
+				return runIssueCheckpointList(ctx, w, errW, noPagerFlag, sessionFlag, issueFlag)
 			case jsonFlag:
 				return runExplainListJSON(ctx, w, errW, sessionFlag, 0)
 			default:
@@ -143,6 +162,7 @@ Optionally filter condensed checkpoints by session ID with --session
 	}
 
 	cmd.Flags().StringVar(&sessionFlag, "session", "", "Filter checkpoints by session ID (or prefix)")
+	cmd.Flags().StringVar(&issueFlag, "issue", "", "List checkpoints linked to an issue-tracker key, e.g. PROJ-123, across all branches (case-insensitive)")
 	cmd.Flags().BoolVar(&noPagerFlag, "no-pager", false, "Disable pager output")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output as JSON instead of the human view")
 	cmd.Flags().BoolVar(&pendingFlag, "pending", false, "List pending work — a preview of the next checkpoint, uncondensed subagent task records, and logs-only resume points")

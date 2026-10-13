@@ -648,6 +648,9 @@ func HydrateListedCheckpointInfo(ctx context.Context, store interface {
 		if meta.SessionID != "" {
 			out.SessionIDs = append(out.SessionIDs, meta.SessionID)
 		}
+		if out.IssueKey == "" {
+			out.IssueKey = meta.IssueKey
+		}
 		if i == len(summary.Sessions)-1 {
 			out.Agent = meta.Agent
 			out.SessionID = meta.SessionID

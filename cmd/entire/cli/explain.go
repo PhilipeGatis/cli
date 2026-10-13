@@ -2457,6 +2457,7 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 			IsTaskCheckpoint: cpInfo.IsTask,
 			ToolUseID:        cpInfo.ToolUseID,
 			Agent:            cpInfo.Agent,
+			IssueKey:         linkedIssueKey(c, cpInfo),
 		}
 		if !cpInfo.ListedStub {
 			point.SessionPrompt = readLatestCommittedSessionPrompt(ctx, store, cpID, cpInfo.SessionCount)
@@ -2587,6 +2588,9 @@ func hydrateListedBranchCheckpoints(
 		points[i].IsTaskCheckpoint = hydrated.IsTask
 		points[i].ToolUseID = hydrated.ToolUseID
 		points[i].Agent = hydrated.Agent
+		if points[i].IssueKey == "" {
+			points[i].IssueKey = hydrated.IssueKey
+		}
 		if hydrated.SessionCount > 0 {
 			points[i].SessionPrompt = readLatestCommittedSessionPrompt(passCtx, store, cpID, hydrated.SessionCount)
 		}
@@ -2911,6 +2915,14 @@ const (
 // Groups commits by checkpoint ID and shows the prompt for each checkpoint.
 // If sessionFilter is non-empty, only shows checkpoints matching that session ID (or prefix).
 func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.PendingCheckpoint, sessionFilter string) string {
+	return formatCheckpointList(w, []explainRow{{Label: "branch", Value: branchName}}, points, sessionFilter,
+		"No checkpoints found on this branch.\n"+
+			"Checkpoints appear here after you commit agent work. Run `entire checkpoint list --pending` to see what the next checkpoint will contain.\n")
+}
+
+// formatCheckpointList renders headerRows, the session filter and the group
+// count, then each checkpoint group (or emptyMessage when there are none).
+func formatCheckpointList(w io.Writer, headerRows []explainRow, points []strategy.PendingCheckpoint, sessionFilter, emptyMessage string) string {
 	var sb strings.Builder
 	styles := newStatusStyles(w)
 
@@ -2931,9 +2943,7 @@ func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.P
 	// Group by checkpoint ID so the count matches the rendered group count
 	groups := groupByCheckpointID(points)
 
-	branchRows := []explainRow{
-		{Label: "branch", Value: branchName},
-	}
+	branchRows := headerRows
 	if sessionFilter != "" {
 		branchRows = append(branchRows, explainRow{Label: explainLabelSession, Value: sessionFilter})
 	}
@@ -2943,8 +2953,7 @@ func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.P
 	sb.WriteString("\n")
 
 	if len(groups) == 0 {
-		sb.WriteString("No checkpoints found on this branch.\n")
-		sb.WriteString("Checkpoints appear here after you commit agent work. Run `entire checkpoint list --pending` to see what the next checkpoint will contain.\n")
+		sb.WriteString(emptyMessage)
 		return sb.String()
 	}
 

@@ -88,6 +88,11 @@ type PendingCheckpoint struct {
 	// Imported indicates this point is a read-only imported (commit-less)
 	// checkpoint on the v1 metadata branch. Imported points are read-only.
 	Imported bool
+
+	// IssueKey is the issue-tracker key linked to this checkpoint: the
+	// commit's Entire-Issue trailer, else the checkpoint metadata's issue_key.
+	// Empty unless the project configured issue_key_pattern.
+	IssueKey string
 }
 
 // StepContext contains all information needed for saving a step checkpoint.

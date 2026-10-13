@@ -511,6 +511,9 @@ func infoFromStored(sc *storedCheckpoint) cp.CheckpointInfo {
 	info.SessionIDs = make([]string, 0, len(sc.Sessions))
 	for i := range sc.Sessions {
 		info.SessionIDs = append(info.SessionIDs, sc.Sessions[i].SessionID)
+		if info.IssueKey == "" {
+			info.IssueKey = sc.Sessions[i].Metadata.IssueKey
+		}
 	}
 	return info
 }

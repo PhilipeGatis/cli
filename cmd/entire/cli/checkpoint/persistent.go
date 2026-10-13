@@ -1573,6 +1573,9 @@ func readCommittedInfoFromCheckpointTree(checkpointID id.CheckpointID, checkpoin
 		if sessionMetadata.SessionID != "" {
 			info.SessionIDs = append(info.SessionIDs, sessionMetadata.SessionID)
 		}
+		if info.IssueKey == "" {
+			info.IssueKey = sessionMetadata.IssueKey
+		}
 		if i == len(summary.Sessions)-1 {
 			info.Agent = sessionMetadata.Agent
 			info.SessionID = sessionMetadata.SessionID

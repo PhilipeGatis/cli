@@ -403,6 +403,10 @@ type CheckpointInfo struct {
 	// ToolUseID is the tool use ID for task checkpoints
 	ToolUseID string
 
+	// IssueKey is the first non-empty session-level issue_key, in session
+	// order; see WriteOptions.IssueKey.
+	IssueKey string
+
 	// Multi-session support
 	SessionCount int      // Number of sessions (1 if single session)
 	SessionIDs   []string // All session IDs that contributed
