@@ -9,14 +9,17 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/require"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/redact"
 )
 
 // branchFilterRepo is a repo with one checkpoint on the default branch and
@@ -195,4 +198,153 @@ func TestResolveBranchListTarget_RejectsInvalidName(t *testing.T) {
 	_, err := resolveBranchListTarget(repo, "../escape")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid branch name")
+}
+
+// listCmdError runs `checkpoint list <args>` and returns its error.
+func listCmdError(t *testing.T, args ...string) error {
+	t.Helper()
+	cmd := newCheckpointListCmd()
+	cmd.SetArgs(args)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	return cmd.Execute()
+}
+
+func TestCheckpointListBranch_StopsAtOriginDefaultWhenLocalIsBehind(t *testing.T) {
+	r := setupBranchFilterRepo(t)
+
+	// Alice's commit was merged (fast-forward) on origin's default branch,
+	// but the local default branch was never pulled. A teammate's branch
+	// exists only on origin, with Bob's commit on top of Alice's.
+	testutil.GitUpdateRef(t, r.dir, "refs/remotes/origin/"+r.defaultBranch, revParse(t, r.dir, branchFilterFeature+"~1"))
+	testutil.GitUpdateRef(t, r.dir, "refs/remotes/origin/teammate", revParse(t, r.dir, branchFilterFeature))
+
+	require.Equal(t, []string{r.bobCP.String()}, listJSONCheckpointIDs(t, "--branch", "teammate"),
+		"Alice's checkpoint is already on origin's default branch")
+
+	// The HEAD-based view uses the same stop set.
+	testutil.RunGit(t, r.dir, "checkout", branchFilterFeature)
+	require.Equal(t, []string{r.bobCP.String()}, listJSONCheckpointIDs(t))
+}
+
+func TestCheckpointListBranch_AcceptsRefPrefixes(t *testing.T) {
+	r := setupBranchFilterRepo(t)
+	testutil.GitUpdateRef(t, r.dir, "refs/remotes/origin/remote-only", revParse(t, r.dir, branchFilterFeature))
+
+	want := []string{r.bobCP.String(), r.aliceCP.String()}
+	for _, value := range []string{
+		"origin/remote-only",
+		"refs/remotes/origin/remote-only",
+		"refs/heads/" + branchFilterFeature,
+	} {
+		require.Equal(t, want, listJSONCheckpointIDs(t, "--branch", value), "--branch %s", value)
+	}
+
+	// The header shows the short name, not the ref.
+	out := runListCmd(t, "--no-pager", "--branch", "refs/heads/"+branchFilterFeature)
+	require.Contains(t, out, "branch       "+branchFilterFeature+"\n")
+
+	// A full ref is exact: refs/heads/ does not fall back to origin.
+	err := listCmdError(t, "--json", "--branch", "refs/heads/remote-only")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found")
+}
+
+func TestCheckpointListBranch_RejectsHEAD(t *testing.T) {
+	r := setupBranchFilterRepo(t)
+	testutil.GitUpdateRef(t, r.dir, "refs/remotes/origin/"+r.defaultBranch, revParse(t, r.dir, r.defaultBranch))
+	testutil.RunGit(t, r.dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+r.defaultBranch)
+
+	for _, value := range []string{"HEAD", "origin/HEAD", "refs/remotes/origin/HEAD"} {
+		err := listCmdError(t, "--json", "--branch", value)
+		require.Error(t, err, "--branch %s", value)
+		require.Contains(t, err.Error(), "omit --branch to list the current branch")
+	}
+}
+
+func TestCheckpointListBranch_LocalWinsOverOrigin(t *testing.T) {
+	r := setupBranchFilterRepo(t)
+
+	// origin's copy of the feature branch is behind the local one.
+	testutil.GitUpdateRef(t, r.dir, "refs/remotes/origin/"+branchFilterFeature, revParse(t, r.dir, branchFilterFeature+"~1"))
+
+	require.Equal(t, []string{r.bobCP.String(), r.aliceCP.String()},
+		listJSONCheckpointIDs(t, "--branch", branchFilterFeature))
+	require.Equal(t, []string{r.aliceCP.String()},
+		listJSONCheckpointIDs(t, "--branch", "origin/"+branchFilterFeature))
+}
+
+func TestCheckpointListBranch_DetachedHead(t *testing.T) {
+	r := setupBranchFilterRepo(t)
+	testutil.RunGit(t, r.dir, "checkout", "--detach", r.defaultBranch)
+
+	require.Equal(t, []string{r.bobCP.String(), r.aliceCP.String()},
+		listJSONCheckpointIDs(t, "--branch", branchFilterFeature))
+	require.Equal(t, []string{r.mainCP.String()}, listJSONCheckpointIDs(t, "--branch", r.defaultBranch))
+
+	out := runListCmd(t, "--no-pager", "--branch", branchFilterFeature)
+	require.Contains(t, out, "branch       "+branchFilterFeature+"\n")
+	require.NotContains(t, out, "HEAD (")
+}
+
+func TestCheckpointListBranch_OriginHEADNamesNonMainDefault(t *testing.T) {
+	r := setupBranchFilterRepo(t)
+
+	// origin/HEAD points at "develop", which carries the feature commits.
+	tip := revParse(t, r.dir, branchFilterFeature)
+	testutil.GitUpdateRef(t, r.dir, "refs/heads/develop", tip)
+	testutil.GitUpdateRef(t, r.dir, "refs/remotes/origin/develop", tip)
+	testutil.RunGit(t, r.dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+
+	// develop is the default branch: full history.
+	require.Equal(t, []string{r.bobCP.String(), r.aliceCP.String(), r.mainCP.String()},
+		listJSONCheckpointIDs(t, "--branch", "develop"))
+
+	// The old main/master is now an ordinary branch fully contained in
+	// develop's first-parent chain: nothing of its own.
+	require.Empty(t, listJSONCheckpointIDs(t, "--branch", r.defaultBranch))
+}
+
+func TestCheckpointListBranch_ImportedOnlyForDefaultOrCurrent(t *testing.T) {
+	r := setupBranchFilterRepo(t)
+
+	repo, err := git.PlainOpen(r.dir)
+	require.NoError(t, err)
+	red, err := redact.JSONLBytes([]byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}` + "\n"))
+	require.NoError(t, err)
+	importedCP := id.MustCheckpointID("e3e3e3e3e3e3")
+	require.NoError(t, checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).Write(context.Background(), checkpoint.Session{
+		CheckpointID:     importedCP,
+		SessionID:        "imported-session",
+		Strategy:         "import",
+		Kind:             "imported",
+		Agent:            agent.AgentTypeClaudeCode,
+		Transcript:       red,
+		Prompts:          []string{"hi"},
+		CheckpointsCount: 1,
+	}))
+
+	// HEAD is on the default branch.
+	require.Contains(t, listJSONCheckpointIDs(t), importedCP.String())
+	require.Contains(t, listJSONCheckpointIDs(t, "--branch", r.defaultBranch), importedCP.String())
+
+	// Another feature branch lists only its own commit-linked checkpoints.
+	require.Equal(t, []string{r.bobCP.String(), r.aliceCP.String()},
+		listJSONCheckpointIDs(t, "--branch", branchFilterFeature))
+
+	// Naming the current branch matches the plain view, imported included.
+	testutil.RunGit(t, r.dir, "checkout", branchFilterFeature)
+	require.Contains(t, listJSONCheckpointIDs(t), importedCP.String())
+	require.Equal(t, listJSONCheckpointIDs(t), listJSONCheckpointIDs(t, "--branch", branchFilterFeature))
+}
+
+func TestResolveFirstRef_NotFoundWrapsSentinel(t *testing.T) {
+	repo, _ := setupCheckpointListRepo(t)
+
+	_, err := resolveFirstRef(repo, plumbing.NewBranchReferenceName("nope"), plumbing.NewRemoteReferenceName("origin", "nope"))
+	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
+
+	ref, err := resolveLocalOrOriginBranchRef(repo, strategy.GetCurrentBranchName(repo))
+	require.NoError(t, err)
+	require.True(t, ref.Name().IsBranch())
 }

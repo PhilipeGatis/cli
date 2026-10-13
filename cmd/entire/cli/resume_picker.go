@@ -334,17 +334,42 @@ func resolveDefaultBranchName(repo *git.Repository) string {
 // ref and falling back to origin's remote-tracking ref (the default branch may
 // not be checked out locally in a worktree-only setup).
 func resolveBranchCommit(repo *git.Repository, name string) *object.Commit {
-	for _, ref := range []plumbing.ReferenceName{
+	ref, err := resolveLocalOrOriginBranchRef(repo, name)
+	if err != nil {
+		return nil
+	}
+	c, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+// resolveLocalOrOriginBranchRef resolves a short branch name to
+// refs/heads/<name>, falling back to refs/remotes/origin/<name>. The returned
+// reference carries the resolved ref name (which of the two matched) and hash.
+func resolveLocalOrOriginBranchRef(repo *git.Repository, name string) (*plumbing.Reference, error) {
+	return resolveFirstRef(repo,
 		plumbing.NewBranchReferenceName(name),
 		plumbing.NewRemoteReferenceName("origin", name),
-	} {
-		if r, err := repo.Reference(ref, true); err == nil {
-			if c, err := repo.CommitObject(r.Hash()); err == nil {
-				return c
-			}
+	)
+}
+
+// resolveFirstRef returns the first of candidates that exists (following
+// symbolic refs). When none exists the error wraps
+// plumbing.ErrReferenceNotFound; any other lookup failure is returned wrapped
+// as-is rather than being mistaken for "not found".
+func resolveFirstRef(repo *git.Repository, candidates ...plumbing.ReferenceName) (*plumbing.Reference, error) {
+	for _, name := range candidates {
+		ref, err := repo.Reference(name, true)
+		if err == nil {
+			return ref, nil
+		}
+		if !errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil, fmt.Errorf("resolve %s: %w", name, err)
 		}
 	}
-	return nil
+	return nil, fmt.Errorf("no ref among %v: %w", candidates, plumbing.ErrReferenceNotFound)
 }
 
 // indexBranchCheckpoints walks history from start back maxCommits commits,

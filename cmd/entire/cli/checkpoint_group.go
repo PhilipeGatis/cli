@@ -121,10 +121,12 @@ like git log --author but without regex (imported checkpoints have no author
 and are left out; a blank value means no filter).
 
 Use --branch <name> to list another branch's condensed checkpoints as if it
-were checked out: the local branch, else origin/<name>. For the default branch
-that is all checkpoints in its history; for any other branch, only those not
-yet on the default branch. Branches that were merged and deleted cannot be
-listed yet.
+were checked out: the local branch, else origin/<name> (origin/<name> and full
+refs/heads/ or refs/remotes/origin/ refs are also accepted). For the default
+branch that is all checkpoints in its history; for any other branch, only
+those not yet on the default branch (local or origin), without imported
+checkpoints unless it is the current branch. Branches that were merged and
+deleted cannot be listed yet; HEAD is rejected (omit --branch instead).
 
 None of --session, --author or --branch applies with --pending.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {

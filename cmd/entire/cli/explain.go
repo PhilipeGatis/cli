@@ -2297,34 +2297,45 @@ func computeReachableFromMain(ctx context.Context, repo *git.Repository) map[plu
 
 // computeDefaultBranchFirstParents returns the set of commit hashes on the
 // default branch's first-parent chain, regardless of what HEAD points at.
-// It is the HEAD-independent half of computeReachableFromMain, used when
+// It is the HEAD-independent half of computeReachableFromMain, also used when
 // listing a branch named explicitly (checkpoint list --branch).
+//
+// The set is the union of the local refs/heads/<default> and
+// refs/remotes/origin/<default> chains: either one can be behind the other
+// (an un-pulled local main, or unpushed local commits), and a commit on
+// either is already shared with the default branch. Using only the local ref
+// would list checkpoints already merged on origin as the branch's own.
 func computeDefaultBranchFirstParents(ctx context.Context, repo *git.Repository) map[plumbing.Hash]bool {
 	reachableFromMain := make(map[plumbing.Hash]bool)
 
-	// Resolve main branch hash
-	var mainBranchHash plumbing.Hash
+	var tips []plumbing.Hash
 	if defaultBranchName := strategy.GetDefaultBranchName(repo); defaultBranchName != "" {
-		ref, refErr := repo.Reference(plumbing.ReferenceName("refs/heads/"+defaultBranchName), true)
-		if refErr != nil {
-			ref, refErr = repo.Reference(plumbing.ReferenceName("refs/remotes/origin/"+defaultBranchName), true)
-		}
-		if refErr == nil {
-			mainBranchHash = ref.Hash()
+		for _, refName := range []plumbing.ReferenceName{
+			plumbing.NewBranchReferenceName(defaultBranchName),
+			plumbing.NewRemoteReferenceName("origin", defaultBranchName),
+		} {
+			if ref, err := repo.Reference(refName, true); err == nil {
+				tips = append(tips, ref.Hash())
+			}
 		}
 	}
-	if mainBranchHash == plumbing.ZeroHash {
-		mainBranchHash = strategy.GetMainBranchHash(repo)
-	}
-	if mainBranchHash == plumbing.ZeroHash {
-		return reachableFromMain
+	if len(tips) == 0 {
+		if h := strategy.GetMainBranchHash(repo); h != plumbing.ZeroHash {
+			tips = append(tips, h)
+		}
 	}
 
-	// Walk main's first-parent chain to build the set
-	_ = walkFirstParentCommits(ctx, repo, mainBranchHash, strategy.MaxCommitTraversalDepth, func(c *object.Commit) error { //nolint:errcheck // Best-effort
-		reachableFromMain[c.Hash] = true
-		return nil
-	})
+	// Walk each tip's first-parent chain. A later walk stops at the first
+	// commit already recorded: everything below it is in the set already.
+	for _, tip := range tips {
+		_ = walkFirstParentCommits(ctx, repo, tip, strategy.MaxCommitTraversalDepth, func(c *object.Commit) error { //nolint:errcheck // Best-effort
+			if reachableFromMain[c.Hash] {
+				return errStopIteration
+			}
+			reachableFromMain[c.Hash] = true
+			return nil
+		})
+	}
 
 	return reachableFromMain
 }
@@ -2398,36 +2409,94 @@ type branchCheckpointsOptions struct {
 // branchListTarget is a branch named explicitly (checkpoint list --branch),
 // resolved to its tip commit.
 type branchListTarget struct {
-	// name is the short branch name as the user gave it.
+	// name is the short branch name (without refs/heads/ or origin/).
 	name string
 	// tip is the commit the walk starts from.
 	tip plumbing.Hash
 	// isDefault selects the full-DAG walk used on the default branch rather
 	// than the first-parent walk that stops at the default branch.
 	isDefault bool
+	// isCurrent is true when the target is the checked-out local branch, so
+	// the listing matches the plain (HEAD) view exactly.
+	isCurrent bool
 }
 
-// resolveBranchListTarget resolves a branch name for checkpoint list
-// --branch: refs/heads/<name>, falling back to refs/remotes/origin/<name>.
-// Whether it is the default branch is decided by name, the same way
-// strategy.IsOnDefaultBranch decides it for HEAD.
-func resolveBranchListTarget(repo *git.Repository, name string) (*branchListTarget, error) {
-	local := plumbing.NewBranchReferenceName(name)
-	if err := local.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid branch name %q: %w", name, err)
+// includesImported reports whether imported (commit-less) checkpoints belong
+// in this target's listing. They are not tied to any commit, so they appear
+// where the plain view shows them (the default and the current branch) but
+// not for another feature branch, whose listing is only the checkpoints not
+// yet on the default branch.
+func (t *branchListTarget) includesImported() bool {
+	return t == nil || t.isDefault || t.isCurrent
+}
+
+const (
+	refsHeadsPrefix   = "refs/heads/"
+	refsOriginPrefix  = "refs/remotes/origin/"
+	originShortPrefix = "origin/"
+)
+
+// branchListCandidates maps a --branch value to the refs to try, in order:
+//   - refs/heads/<n> or refs/remotes/origin/<n>: exactly that ref;
+//   - otherwise refs/heads/<value>, then refs/remotes/origin/<value>, then
+//     (for "origin/<n>") refs/remotes/origin/<n>, mirroring git's own
+//     preference for a local branch over a remote-tracking one.
+func branchListCandidates(value string) []plumbing.ReferenceName {
+	switch {
+	case strings.HasPrefix(value, refsHeadsPrefix), strings.HasPrefix(value, refsOriginPrefix):
+		return []plumbing.ReferenceName{plumbing.ReferenceName(value)}
 	}
-	ref, err := repo.Reference(local, true)
+	candidates := []plumbing.ReferenceName{
+		plumbing.NewBranchReferenceName(value),
+		plumbing.NewRemoteReferenceName("origin", value),
+	}
+	if rest, ok := strings.CutPrefix(value, originShortPrefix); ok && rest != "" {
+		candidates = append(candidates, plumbing.NewRemoteReferenceName("origin", rest))
+	}
+	return candidates
+}
+
+// shortBranchName strips refs/heads/, refs/remotes/origin/ or origin/ from a
+// branch ref or --branch value.
+func shortBranchName(name string) string {
+	for _, prefix := range []string{refsHeadsPrefix, refsOriginPrefix, originShortPrefix} {
+		if rest, ok := strings.CutPrefix(name, prefix); ok {
+			return rest
+		}
+	}
+	return name
+}
+
+// resolveBranchListTarget resolves a --branch value for checkpoint list: a
+// short name (local branch, else origin/<name>), origin/<name>, or a full
+// refs/heads/ or refs/remotes/origin/ ref. HEAD is rejected: it is what the
+// plain view already lists, and origin/HEAD is only a pointer to the remote
+// default branch. Whether the target is the default branch is decided by its
+// short name, the same way strategy.IsOnDefaultBranch decides it for HEAD.
+func resolveBranchListTarget(repo *git.Repository, value string) (*branchListTarget, error) {
+	if shortBranchName(value) == "HEAD" {
+		return nil, fmt.Errorf("--branch %q is not supported: use a branch name, or omit --branch to list the current branch", value)
+	}
+	candidates := branchListCandidates(value)
+	for _, name := range candidates {
+		if err := name.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid branch name %q: %w", value, err)
+		}
+	}
+	ref, err := resolveFirstRef(repo, candidates...)
 	if err != nil {
-		ref, err = repo.Reference(plumbing.NewRemoteReferenceName("origin", name), true)
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil, fmt.Errorf("branch %q not found locally or on origin "+
+				"(branches that were merged and deleted are not supported yet)", value)
+		}
+		return nil, fmt.Errorf("failed to resolve branch %q: %w", value, err)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("branch %q not found locally or on origin "+
-			"(branches that were merged and deleted are not supported yet)", name)
-	}
+	short := shortBranchName(ref.Name().String())
 	return &branchListTarget{
-		name:      name,
+		name:      short,
 		tip:       ref.Hash(),
-		isDefault: strategy.IsDefaultBranchName(repo, name),
+		isDefault: strategy.IsDefaultBranchName(repo, short),
+		isCurrent: ref.Name().IsBranch() && strategy.GetCurrentBranchName(repo) == short,
 	}, nil
 }
 
@@ -2629,7 +2698,7 @@ func getBranchCheckpointsWithOptions(ctx context.Context, repo *git.Repository, 
 	// bounded by the same limit so a one-month import doesn't produce an
 	// unbounded list. They get their own budget and never displace live points.
 	var imported []strategy.PendingCheckpoint
-	if authorFilter == "" {
+	if authorFilter == "" && opts.target.includesImported() {
 		imported = getImportedPendingCheckpoints(ctx, repo)
 	}
 	sort.Slice(imported, func(i, j int) bool {
