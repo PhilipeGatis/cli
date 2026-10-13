@@ -121,6 +121,7 @@ func totalTokens(tu *agent.TokenUsage) int {
 
 // Row labels reused across the explain output's diagnostic tables.
 const (
+	explainLabelAuthor      = "author"
 	explainLabelCause       = "cause"
 	explainLabelCheckpoints = "checkpoints"
 	explainLabelMessage     = "message"

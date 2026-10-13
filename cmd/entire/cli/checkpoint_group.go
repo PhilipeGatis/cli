@@ -115,8 +115,9 @@ id, "is_next_checkpoint": true, and a "next_checkpoint" object:
 The arrays are always present, possibly empty.
 
 Optionally filter condensed checkpoints by session ID with --session, or by
-the commit author's name or email with --author (case-insensitive substring;
-imported checkpoints have no author and are left out). Neither applies with
+commit author with --author: a case-insensitive substring of "Name <email>",
+like git log --author but without regex (imported checkpoints have no author
+and are left out; a blank value means no filter). Neither applies with
 --pending.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if checkDisabledGuard(cmd.Context(), cmd.OutOrStdout()) {
@@ -125,6 +126,7 @@ imported checkpoints have no author and are left out). Neither applies with
 			ctx := cmd.Context()
 			w := cmd.OutOrStdout()
 			errW := cmd.ErrOrStderr()
+			authorFlag = normalizeAuthorFilter(authorFlag)
 
 			// --session filters the condensed dataset only; the pending dataset
 			// mirrors the historical rewind --list, which had no session filter.
@@ -149,7 +151,7 @@ imported checkpoints have no author and are left out). Neither applies with
 	}
 
 	cmd.Flags().StringVar(&sessionFlag, "session", "", "Filter checkpoints by session ID (or prefix)")
-	cmd.Flags().StringVar(&authorFlag, "author", "", "Filter checkpoints by commit author name or email (case-insensitive substring)")
+	cmd.Flags().StringVar(&authorFlag, "author", "", "Filter checkpoints by commit author (case-insensitive substring of \"Name <email>\")")
 	cmd.Flags().BoolVar(&noPagerFlag, "no-pager", false, "Disable pager output")
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output as JSON instead of the human view")
 	cmd.Flags().BoolVar(&pendingFlag, "pending", false, "List pending work — a preview of the next checkpoint, uncondensed subagent task records, and logs-only resume points")

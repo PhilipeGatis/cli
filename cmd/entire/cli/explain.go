@@ -2377,14 +2377,24 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 	return getBranchCheckpointsByAuthor(ctx, repo, limit, "")
 }
 
+// normalizeAuthorFilter trims surrounding whitespace from an --author value.
+// A blank value (empty after trimming) means "no filter", matching how
+// `git log --author ""` matches every commit.
+func normalizeAuthorFilter(author string) string {
+	return strings.TrimSpace(author)
+}
+
 // checkpointMatchesAuthorFilter reports whether the checkpoint's commit author
-// matches authorFilter: a case-insensitive substring of the author name or
-// email, like `git log --author` without the regex. Imported (commit-less)
-// points have no author and never match a non-empty filter.
+// matches authorFilter: a case-insensitive substring of "Name <email>", like
+// `git log --author` without the regex (so "Smith <alice@" matches across the
+// name/email boundary). Imported (commit-less) points have no author and never
+// match a non-empty filter.
 func checkpointMatchesAuthorFilter(p strategy.PendingCheckpoint, authorFilter string) bool {
-	needle := strings.ToLower(authorFilter)
-	return strings.Contains(strings.ToLower(p.AuthorName), needle) ||
-		strings.Contains(strings.ToLower(p.AuthorEmail), needle)
+	if p.AuthorName == "" && p.AuthorEmail == "" {
+		return false
+	}
+	ident := p.AuthorName + " <" + p.AuthorEmail + ">"
+	return strings.Contains(strings.ToLower(ident), strings.ToLower(authorFilter))
 }
 
 // getBranchCheckpointsByAuthor is getBranchCheckpoints restricted to
@@ -2393,6 +2403,7 @@ func checkpointMatchesAuthorFilter(p strategy.PendingCheckpoint, authorFilter st
 // filter runs during the commit walk, before the limit is applied, so a
 // teammate's older checkpoints aren't evicted by everyone else's newer ones.
 func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, limit int, authorFilter string) ([]strategy.PendingCheckpoint, bool, error) {
+	authorFilter = normalizeAuthorFilter(authorFilter)
 	// Warn (once per process) if metadata branches are disconnected
 	strategy.WarnIfMetadataDisconnected(ctx)
 
@@ -2733,7 +2744,7 @@ func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager 
 	}
 
 	// Format output
-	output := formatBranchCheckpoints(w, branchName, points, sessionFilter)
+	output := formatBranchCheckpoints(w, branchName, points, branchListFilter{session: sessionFilter, author: normalizeAuthorFilter(authorFilter)})
 
 	outputExplainContent(w, output, noPager)
 
@@ -2934,12 +2945,39 @@ const (
 	maxPromptDisplayLength = 60
 )
 
+// branchListFilter holds the condensed-list filters shown in the branch view
+// header and reflected in its empty-state message.
+type branchListFilter struct {
+	session string // session ID or prefix (applied in formatBranchCheckpoints)
+	author  string // author substring (already applied by the commit walk)
+}
+
+func (f branchListFilter) active() bool {
+	return f.session != "" || f.author != ""
+}
+
+// emptyMessage describes an empty filtered list, e.g.
+// `No checkpoints by authors matching "x" on this branch.`
+func (f branchListFilter) emptyMessage() string {
+	var parts []string
+	if f.author != "" {
+		parts = append(parts, fmt.Sprintf("by authors matching %q", f.author))
+	}
+	if f.session != "" {
+		parts = append(parts, fmt.Sprintf("from session %q", f.session))
+	}
+	return "No checkpoints " + strings.Join(parts, " ") + " on this branch.\n"
+}
+
 // formatBranchCheckpoints formats checkpoint information for a branch.
 // Groups commits by checkpoint ID and shows the prompt for each checkpoint.
-// If sessionFilter is non-empty, only shows checkpoints matching that session ID (or prefix).
-func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.PendingCheckpoint, sessionFilter string) string {
+// If filter.session is non-empty, only shows checkpoints matching that session
+// ID (or prefix). filter.author is display-only here: points are expected to be
+// author-filtered already (see getBranchCheckpointsByAuthor).
+func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.PendingCheckpoint, filter branchListFilter) string {
 	var sb strings.Builder
 	styles := newStatusStyles(w)
+	sessionFilter := filter.session
 
 	// Filter by session if specified (must happen before counting). Use the
 	// shared matcher so archived contributors in SessionIDs are considered —
@@ -2964,11 +3002,18 @@ func formatBranchCheckpoints(w io.Writer, branchName string, points []strategy.P
 	if sessionFilter != "" {
 		branchRows = append(branchRows, explainRow{Label: explainLabelSession, Value: sessionFilter})
 	}
+	if filter.author != "" {
+		branchRows = append(branchRows, explainRow{Label: explainLabelAuthor, Value: filter.author})
+	}
 	branchRows = append(branchRows, explainRow{Label: explainLabelCheckpoints, Value: strconv.Itoa(len(groups))})
 
 	sb.WriteString(styles.metadataRows(branchRows))
 	sb.WriteString("\n")
 
+	if len(groups) == 0 && filter.active() {
+		sb.WriteString(filter.emptyMessage())
+		return sb.String()
+	}
 	if len(groups) == 0 {
 		sb.WriteString("No checkpoints found on this branch.\n")
 		sb.WriteString("Checkpoints appear here after you commit agent work. Run `entire checkpoint list --pending` to see what the next checkpoint will contain.\n")
