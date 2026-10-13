@@ -32,7 +32,10 @@ func TestCheckpointMatchesAuthorFilter(t *testing.T) {
 		{"alice", true},
 		{"SMITH", true},
 		{"@example.com", true},
+		{"Smith <alice@", true},       // spans the name/email boundary like git log --author
+		{"<ALICE@EXAMPLE.COM>", true}, // angle brackets are part of the ident
 		{"bob", false},
+		{"alice.*", false}, // no regex
 	}
 	for _, tt := range tests {
 		if got := checkpointMatchesAuthorFilter(p, tt.filter); got != tt.want {
@@ -43,6 +46,54 @@ func TestCheckpointMatchesAuthorFilter(t *testing.T) {
 	if checkpointMatchesAuthorFilter(strategy.PendingCheckpoint{Imported: true}, "alice") {
 		t.Error("expected a point without an author not to match a non-empty filter")
 	}
+	if checkpointMatchesAuthorFilter(strategy.PendingCheckpoint{Imported: true}, "<>") {
+		t.Error("expected an authorless point not to match the empty ident brackets")
+	}
+}
+
+func TestNormalizeAuthorFilter(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "alice", normalizeAuthorFilter("  alice\t"))
+	require.Equal(t, "Alice Smith", normalizeAuthorFilter(" Alice Smith "))
+	require.Empty(t, normalizeAuthorFilter("   "))
+}
+
+func TestFormatBranchCheckpoints_FilterAwareEmptyState(t *testing.T) {
+	t.Parallel()
+
+	const genericHint = "Checkpoints appear here after you commit agent work"
+
+	t.Run("author", func(t *testing.T) {
+		t.Parallel()
+		out := formatBranchCheckpoints(io.Discard, "main", nil, branchListFilter{author: "carol"})
+		require.Contains(t, out, "author       carol")
+		require.Contains(t, out, "checkpoints  0")
+		require.Contains(t, out, `No checkpoints by authors matching "carol" on this branch.`)
+		require.NotContains(t, out, genericHint)
+	})
+
+	t.Run("session", func(t *testing.T) {
+		t.Parallel()
+		out := formatBranchCheckpoints(io.Discard, "main", nil, branchListFilter{session: "sess-x"})
+		require.Contains(t, out, `No checkpoints from session "sess-x" on this branch.`)
+		require.NotContains(t, out, genericHint)
+	})
+
+	t.Run("author and session", func(t *testing.T) {
+		t.Parallel()
+		out := formatBranchCheckpoints(io.Discard, "main", nil, branchListFilter{session: "sess-x", author: "carol"})
+		require.Contains(t, out, "session      sess-x")
+		require.Contains(t, out, "author       carol")
+		require.Contains(t, out, `No checkpoints by authors matching "carol" from session "sess-x" on this branch.`)
+	})
+
+	t.Run("no filter keeps the onboarding hint", func(t *testing.T) {
+		t.Parallel()
+		out := formatBranchCheckpoints(io.Discard, "main", nil, branchListFilter{})
+		require.Contains(t, out, "No checkpoints found on this branch.")
+		require.Contains(t, out, genericHint)
+	})
 }
 
 // seedAuthoredCheckpoints creates one committed checkpoint by Alice and a newer
@@ -142,4 +193,47 @@ func TestRunExplainListJSON_AuthorFilterAndFields(t *testing.T) {
 	require.Equal(t, aliceCP.String(), out[0].CheckpointID)
 	require.Equal(t, "Alice Smith", out[0].AuthorName)
 	require.Equal(t, "alice@example.com", out[0].AuthorEmail)
+}
+
+func TestGetBranchCheckpointsByAuthor_BlankFilterMatchesAll(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+
+	seedAuthoredCheckpoints(t, tmpDir, repo)
+
+	points, _, err := getBranchCheckpointsByAuthor(context.Background(), repo, 10, "   ")
+	require.NoError(t, err)
+	require.Len(t, points, 2, "a whitespace-only --author means no filter")
+
+	padded, _, err := getBranchCheckpointsByAuthor(context.Background(), repo, 10, "  bob jones <bob@ ")
+	require.NoError(t, err)
+	require.Len(t, padded, 1, "surrounding whitespace is trimmed and the ident spans name and email")
+	require.Equal(t, "Bob Jones", padded[0].AuthorName)
+}
+
+func TestRunExplainBranchWithFilter_AuthorEmptyState(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+
+	seedAuthoredCheckpoints(t, tmpDir, repo)
+
+	var stdout bytes.Buffer
+	require.NoError(t, runExplainBranchWithFilter(context.Background(), &stdout, io.Discard, true, "", " carol "))
+	out := stdout.String()
+	require.Contains(t, out, "author       carol")
+	require.Contains(t, out, `No checkpoints by authors matching "carol" on this branch.`)
+	require.NotContains(t, out, "Checkpoints appear here after you commit agent work")
+
+	stdout.Reset()
+	require.NoError(t, runExplainBranchWithFilter(context.Background(), &stdout, io.Discard, true, "", "alice"))
+	require.Contains(t, stdout.String(), "author       alice")
+	require.Contains(t, stdout.String(), "checkpoints  1")
 }

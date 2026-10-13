@@ -3467,7 +3467,7 @@ func TestFormatBranchCheckpoints_BasicOutput(t *testing.T) {
 		},
 	}
 
-	output := formatBranchCheckpoints(io.Discard, "feature/my-branch", points, "")
+	output := formatBranchCheckpoints(io.Discard, "feature/my-branch", points, branchListFilter{})
 
 	// Should show branch name
 	if !strings.Contains(output, "feature/my-branch") {
@@ -3520,7 +3520,7 @@ func TestFormatBranchCheckpoints_GroupedByCheckpointID(t *testing.T) {
 		},
 	}
 
-	output := formatBranchCheckpoints(io.Discard, "main", points, "")
+	output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{})
 
 	// Should group by checkpoint ID - check for checkpoint headers (identity bullet)
 	if !strings.Contains(output, "● chk111111111") {
@@ -3547,7 +3547,7 @@ func TestFormatBranchCheckpoints_GroupedByCheckpointID(t *testing.T) {
 }
 
 func TestFormatBranchCheckpoints_NoCheckpoints(t *testing.T) {
-	output := formatBranchCheckpoints(io.Discard, "feature/empty-branch", nil, "")
+	output := formatBranchCheckpoints(io.Discard, "feature/empty-branch", nil, branchListFilter{})
 
 	// Should show branch name
 	if !strings.Contains(output, "feature/empty-branch") {
@@ -3573,7 +3573,7 @@ func TestFormatBranchCheckpoints_ShowsSessionInfo(t *testing.T) {
 		},
 	}
 
-	output := formatBranchCheckpoints(io.Discard, "main", points, "")
+	output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{})
 
 	// Should show session prompt
 	if !strings.Contains(output, "This is my test prompt") {
@@ -3595,7 +3595,7 @@ func TestFormatBranchCheckpoints_ShowsTaskCheckpoints(t *testing.T) {
 		},
 	}
 
-	output := formatBranchCheckpoints(io.Discard, "main", points, "")
+	output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{})
 
 	// Should indicate task checkpoint
 	if !strings.Contains(output, "[Task]") && !strings.Contains(output, "task") {
@@ -3658,7 +3658,7 @@ func TestFormatBranchCheckpoints_TruncatesLongMessages(t *testing.T) {
 		},
 	}
 
-	output := formatBranchCheckpoints(io.Discard, "main", points, "")
+	output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{})
 
 	// Output should not contain the full 200 character message
 	if strings.Contains(output, longMessage) {
@@ -4139,7 +4139,7 @@ func TestFormatBranchCheckpoints_SessionFilter(t *testing.T) {
 	}
 
 	t.Run("no filter shows all checkpoints", func(t *testing.T) {
-		output := formatBranchCheckpoints(io.Discard, "main", points, "")
+		output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{})
 
 		// Should show all checkpoints (new metadata-row shape)
 		if !strings.Contains(output, "checkpoints  3") {
@@ -4155,7 +4155,7 @@ func TestFormatBranchCheckpoints_SessionFilter(t *testing.T) {
 	})
 
 	t.Run("filter by exact session ID", func(t *testing.T) {
-		output := formatBranchCheckpoints(io.Discard, "main", points, "2026-01-22-session-alpha")
+		output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{session: "2026-01-22-session-alpha"})
 
 		// Should show only alpha checkpoints (2 of them)
 		if !strings.Contains(output, "checkpoints  2") {
@@ -4175,7 +4175,7 @@ func TestFormatBranchCheckpoints_SessionFilter(t *testing.T) {
 	})
 
 	t.Run("filter by session ID prefix", func(t *testing.T) {
-		output := formatBranchCheckpoints(io.Discard, "main", points, "2026-01-22-session-b")
+		output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{session: "2026-01-22-session-b"})
 
 		// Should show only beta checkpoint (1)
 		if !strings.Contains(output, "checkpoints  1") {
@@ -4187,7 +4187,7 @@ func TestFormatBranchCheckpoints_SessionFilter(t *testing.T) {
 	})
 
 	t.Run("filter with no matches", func(t *testing.T) {
-		output := formatBranchCheckpoints(io.Discard, "main", points, "nonexistent-session")
+		output := formatBranchCheckpoints(io.Discard, "main", points, branchListFilter{session: "nonexistent-session"})
 
 		// Should show 0 checkpoints
 		if !strings.Contains(output, "checkpoints  0") {
@@ -4212,7 +4212,7 @@ func TestFormatBranchCheckpoints_SessionFilter(t *testing.T) {
 				SessionIDs:   []string{"2026-01-22-session-alpha", "2026-01-22-session-beta"},
 			},
 		}
-		output := formatBranchCheckpoints(io.Discard, "main", multi, "2026-01-22-session-alpha")
+		output := formatBranchCheckpoints(io.Discard, "main", multi, branchListFilter{session: "2026-01-22-session-alpha"})
 		if !strings.Contains(output, "checkpoints  1") {
 			t.Errorf("expected archived contributor to match session filter, got:\n%s", output)
 		}
@@ -4232,7 +4232,7 @@ func TestFormatBranchCheckpoints_SessionFilter(t *testing.T) {
 				SessionID:    "",
 			},
 		}
-		output := formatBranchCheckpoints(io.Discard, "main", stub, "2026-01-22-session-alpha")
+		output := formatBranchCheckpoints(io.Discard, "main", stub, branchListFilter{session: "2026-01-22-session-alpha"})
 		if !strings.Contains(output, "checkpoints  0") {
 			t.Errorf("empty SessionID stub must not match a session filter, got:\n%s", output)
 		}
