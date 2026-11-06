@@ -2310,6 +2310,10 @@ const branchCheckpointsLimit = 100
 // commitScanLimit is how far back to scan git history for checkpoints
 const commitScanLimit = 500
 
+// authorScanLimitNote is printed (to stderr) when a checkpoint list --author
+// search stopped before scanning everything, by either budget.
+const authorScanLimitNote = "note: the --author search reached its scan limit; older matching checkpoints may be hidden.\n"
+
 // errStopIteration is used to stop commit iteration early
 var errStopIteration = errors.New("stop iteration")
 
@@ -2336,8 +2340,6 @@ func computeReachableFromMain(ctx context.Context, repo *git.Repository) map[plu
 // either is already shared with the default branch. Using only the local ref
 // would list checkpoints already merged on origin as the branch's own.
 func computeDefaultBranchFirstParents(ctx context.Context, repo *git.Repository) map[plumbing.Hash]bool {
-	reachableFromMain := make(map[plumbing.Hash]bool)
-
 	var tips []plumbing.Hash
 	if defaultBranchName := strategy.GetDefaultBranchName(repo); defaultBranchName != "" {
 		for _, refName := range []plumbing.ReferenceName{
@@ -2355,19 +2357,36 @@ func computeDefaultBranchFirstParents(ctx context.Context, repo *git.Repository)
 		}
 	}
 
-	// Walk each tip's first-parent chain. A later walk stops at the first
-	// commit already recorded: everything below it is in the set already.
+	return firstParentUnion(ctx, repo, tips, strategy.MaxCommitTraversalDepth)
+}
+
+// firstParentUnion returns every commit within maxDepth first-parent steps of
+// any of tips: the union of each tip's own bounded window.
+//
+// A later walk stops early only at a commit an earlier walk reached at the
+// same depth or less, because that earlier window already covers every
+// ancestor the later walk could still visit. When the earlier walk reached
+// the commit deeper (its tip is ahead, e.g. a local default branch with
+// unpushed commits), its window ends sooner, so the later walk carries on.
+func firstParentUnion(ctx context.Context, repo *git.Repository, tips []plumbing.Hash, maxDepth int) map[plumbing.Hash]bool {
+	depth := make(map[plumbing.Hash]int)
 	for _, tip := range tips {
-		_ = walkFirstParentCommits(ctx, repo, tip, strategy.MaxCommitTraversalDepth, func(c *object.Commit) error { //nolint:errcheck // Best-effort
-			if reachableFromMain[c.Hash] {
+		n := 0
+		_ = walkFirstParentCommits(ctx, repo, tip, maxDepth, func(c *object.Commit) error { //nolint:errcheck // Best-effort
+			if d, seen := depth[c.Hash]; seen && d <= n {
 				return errStopIteration
 			}
-			reachableFromMain[c.Hash] = true
+			depth[c.Hash] = n
+			n++
 			return nil
 		})
 	}
 
-	return reachableFromMain
+	reachable := make(map[plumbing.Hash]bool, len(depth))
+	for h := range depth {
+		reachable[h] = true
+	}
+	return reachable
 }
 
 // walkFirstParentCommits walks the first-parent chain starting from `from`,
@@ -2651,12 +2670,15 @@ func getBranchCheckpointsWithOptions(ctx context.Context, repo *git.Repository, 
 		points = append(points, point)
 	}
 
-	err = walkBranchListCommits(ctx, repo, startHash, isOnDefault, collectCheckpoint)
+	scanLimited, err := walkBranchListCommits(ctx, repo, startHash, isOnDefault, commitScanLimit, collectCheckpoint)
 	if err != nil {
 		return nil, false, fmt.Errorf("error iterating commits: %w", err)
 	}
 
-	truncated := false
+	// An author-filtered walk keeps only the matching commits it scans, so it
+	// usually ends on the scan budget rather than the list limit. Report that
+	// as truncation so older matching checkpoints aren't presented as absent.
+	truncated := scanLimited && authorFilter != ""
 
 	// Sort live (commit-linked) points and apply the limit FIRST, so
 	// a large historical import can't evict recent commit-linked checkpoints.
@@ -2711,23 +2733,38 @@ func branchListWalkStart(repo *git.Repository, target *branchListTarget) (start 
 }
 
 // walkBranchListCommits calls collect for each commit a checkpoint list
-// should consider, starting at start and bounded by commitScanLimit.
-func walkBranchListCommits(ctx context.Context, repo *git.Repository, start plumbing.Hash, isOnDefault bool, collect func(*object.Commit)) error {
+// should consider, starting at start and visiting at most scanLimit commits,
+// and reports whether it stopped at that budget with commits still left to
+// scan. On the default branch it walks the full DAG so checkpoint commits on
+// merged feature branches (second parents of merge commits) are found. On any
+// other branch it walks first parents only and stops at the first commit on
+// the default branch's first-parent chain.
+func walkBranchListCommits(ctx context.Context, repo *git.Repository, start plumbing.Hash, isOnDefault bool, scanLimit int, collect func(*object.Commit)) (bool, error) {
+	limited := false
+	count := 0
 	if !isOnDefault {
 		// On feature branches, use first-parent walk with branch filtering.
 		// This avoids walking into main's full history through merge commit parents.
 		// isOnDefault is false here (for HEAD or the named branch), so build
-		// the default branch's first-parent set unconditionally.
+		// the default branch's first-parent set unconditionally. The walk
+		// allows one commit past the budget only to learn whether anything
+		// was left unscanned.
 		reachableFromMain := computeDefaultBranchFirstParents(ctx, repo)
-		return walkFirstParentCommits(ctx, repo, start, commitScanLimit, func(c *object.Commit) error {
+		err := walkFirstParentCommits(ctx, repo, start, scanLimit+1, func(c *object.Commit) error {
 			// Once we hit a commit reachable from main on the first-parent chain,
 			// all earlier ancestors are also shared-with-main, so stop scanning.
 			if reachableFromMain[c.Hash] {
 				return errStopIteration
 			}
+			if count >= scanLimit {
+				limited = true
+				return errStopIteration
+			}
+			count++
 			collect(c)
 			return nil
 		})
+		return limited, err
 	}
 
 	// On the default branch, use full DAG walk to find checkpoint commits
@@ -2737,22 +2774,23 @@ func walkBranchListCommits(ctx context.Context, repo *git.Repository, start plum
 		Order: git.LogOrderCommitterTime,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to get commit log: %w", err)
+		return false, fmt.Errorf("failed to get commit log: %w", err)
 	}
 	defer iter.Close()
 
-	count := 0
-	return iter.ForEach(func(c *object.Commit) error { //nolint:wrapcheck // caller wraps
+	err = iter.ForEach(func(c *object.Commit) error {
 		if err := ctx.Err(); err != nil {
 			return err //nolint:wrapcheck // Propagating context cancellation
 		}
-		if count >= commitScanLimit {
+		if count >= scanLimit {
+			limited = true
 			return storer.ErrStop
 		}
 		count++
 		collect(c)
 		return nil
 	})
+	return limited, err //nolint:wrapcheck // the caller wraps iteration errors
 }
 
 // hydrateListedBranchCheckpoints fills SessionID/etc for remote-discovered List
@@ -2971,7 +3009,11 @@ func runExplainBranchWithFilter(ctx context.Context, w, errW io.Writer, noPager 
 	// the user reached this path via `explain`, `checkpoint explain`, or
 	// `checkpoint list` (the latter two share this code but expose different
 	// flags).
-	if truncated {
+	switch {
+	case truncated && filters.author != "":
+		// explain has no --author, so the hint below would drop the filter.
+		fmt.Fprint(errW, authorScanLimitNote)
+	case truncated:
 		fmt.Fprint(errW, "note: checkpoint list reached its scan limit; older checkpoints may be hidden. "+
 			"Run 'entire checkpoint explain --json --limit <N>' to see more.\n")
 	}

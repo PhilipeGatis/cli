@@ -881,7 +881,10 @@ func runExplainListJSON(ctx context.Context, w, errW io.Writer, filters checkpoi
 		return fmt.Errorf("failed to encode checkpoint list: %w", err)
 	}
 
-	if truncated {
+	switch {
+	case truncated && filters.author != "":
+		fmt.Fprint(errW, authorScanLimitNote)
+	case truncated:
 		fmt.Fprintf(errW, "note: list capped at %d checkpoints; rerun with --limit <N> to see more\n", limit)
 	}
 	return nil
