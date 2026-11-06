@@ -303,6 +303,7 @@ func TestCheckpointListCmd_OutgoingRejectsOtherDatasets(t *testing.T) {
 		{args: []string{"--outgoing", "--pending"}, want: "--outgoing cannot be combined with --pending"},
 		{args: []string{"--outgoing", "--session", "abc"}, want: "--session cannot be combined with --outgoing"},
 		{args: []string{"--outgoing", "--author", "alice"}, want: "--author cannot be combined with --outgoing"},
+		{args: []string{"--outgoing", "--branch", "main"}, want: "--branch cannot be combined with --outgoing"},
 	} {
 		cmd := newCheckpointListCmd()
 		cmd.SetArgs(tc.args)

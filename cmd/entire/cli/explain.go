@@ -2504,7 +2504,7 @@ func shortBranchName(name string) string {
 // default branch. Whether the target is the default branch is decided by its
 // short name, the same way strategy.IsOnDefaultBranch decides it for HEAD.
 func resolveBranchListTarget(repo *git.Repository, value string) (*branchListTarget, error) {
-	if shortBranchName(value) == "HEAD" {
+	if shortBranchName(value) == plumbing.HEAD.String() {
 		return nil, fmt.Errorf("--branch %q is not supported: use a branch name, or omit --branch to list the current branch", value)
 	}
 	candidates := branchListCandidates(value)
@@ -2599,24 +2599,13 @@ func getBranchCheckpointsWithOptions(ctx context.Context, repo *git.Repository, 
 		}
 	}
 
-	// Start hash and default-branch status (which decides how history is
-	// walked) come from the named branch when given, else from HEAD.
-	var startHash plumbing.Hash
-	var isOnDefault bool
-	if opts.target != nil {
-		startHash = opts.target.tip
-		isOnDefault = opts.target.isDefault
-	} else {
-		head, headErr := repo.Head()
-		if headErr != nil {
-			// Unborn HEAD (no commits yet) - return empty list instead of erroring
-			if errors.Is(headErr, plumbing.ErrReferenceNotFound) {
-				return []strategy.PendingCheckpoint{}, false, nil
-			}
-			return nil, false, fmt.Errorf("failed to get HEAD: %w", headErr)
-		}
-		startHash = head.Hash()
-		isOnDefault, _ = strategy.IsOnDefaultBranch(repo)
+	startHash, isOnDefault, unborn, err := branchListWalkStart(repo, opts.target)
+	if err != nil {
+		return nil, false, err
+	}
+	if unborn {
+		// Unborn HEAD (no commits yet) - return empty list instead of erroring
+		return []strategy.PendingCheckpoint{}, false, nil
 	}
 
 	var points []strategy.PendingCheckpoint
@@ -2663,7 +2652,6 @@ func getBranchCheckpointsWithOptions(ctx context.Context, repo *git.Repository, 
 	}
 
 	err = walkBranchListCommits(ctx, repo, startHash, isOnDefault, collectCheckpoint)
-
 	if err != nil {
 		return nil, false, fmt.Errorf("error iterating commits: %w", err)
 	}
@@ -2701,6 +2689,25 @@ func getBranchCheckpointsWithOptions(ctx context.Context, repo *git.Repository, 
 	points = append(points, imported...)
 
 	return points, truncated, nil
+}
+
+// branchListWalkStart returns the commit a checkpoint list walk starts from and
+// whether that tip is the default branch (which decides how history is
+// walked): the named branch when target is set, else HEAD. unborn reports a
+// HEAD with no commits yet.
+func branchListWalkStart(repo *git.Repository, target *branchListTarget) (start plumbing.Hash, isOnDefault, unborn bool, err error) {
+	if target != nil {
+		return target.tip, target.isDefault, false, nil
+	}
+	head, err := repo.Head()
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return plumbing.ZeroHash, false, true, nil
+		}
+		return plumbing.ZeroHash, false, false, fmt.Errorf("failed to get HEAD: %w", err)
+	}
+	isOnDefault, _ = strategy.IsOnDefaultBranch(repo)
+	return head.Hash(), isOnDefault, false, nil
 }
 
 // walkBranchListCommits calls collect for each commit a checkpoint list
