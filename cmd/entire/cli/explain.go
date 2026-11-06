@@ -2530,45 +2530,7 @@ func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, lim
 		points = append(points, point)
 	}
 
-	if isOnDefault {
-		// On the default branch, use full DAG walk to find checkpoint commits
-		// on merged feature branches (second parents of merge commits).
-		iter, iterErr := repo.Log(&git.LogOptions{
-			From:  head.Hash(),
-			Order: git.LogOrderCommitterTime,
-		})
-		if iterErr != nil {
-			return nil, false, fmt.Errorf("failed to get commit log: %w", iterErr)
-		}
-		defer iter.Close()
-
-		count := 0
-		err = iter.ForEach(func(c *object.Commit) error {
-			if err := ctx.Err(); err != nil {
-				return err //nolint:wrapcheck // Propagating context cancellation
-			}
-			if count >= commitScanLimit {
-				return storer.ErrStop
-			}
-			count++
-			collectCheckpoint(c)
-			return nil
-		})
-	} else {
-		// On feature branches, use first-parent walk with branch filtering.
-		// This avoids walking into main's full history through merge commit parents.
-		reachableFromMain := computeReachableFromMain(ctx, repo)
-
-		err = walkFirstParentCommits(ctx, repo, head.Hash(), commitScanLimit, func(c *object.Commit) error {
-			// Once we hit a commit reachable from main on the first-parent chain,
-			// all earlier ancestors are also shared-with-main, so stop scanning.
-			if reachableFromMain[c.Hash] {
-				return errStopIteration
-			}
-			collectCheckpoint(c)
-			return nil
-		})
-	}
+	err = walkBranchListCommits(ctx, repo, head.Hash(), isOnDefault, collectCheckpoint)
 
 	if err != nil {
 		return nil, false, fmt.Errorf("error iterating commits: %w", err)
@@ -2607,6 +2569,49 @@ func getBranchCheckpointsByAuthor(ctx context.Context, repo *git.Repository, lim
 	points = append(points, imported...)
 
 	return points, truncated, nil
+}
+
+// walkBranchListCommits calls collect for each commit a checkpoint list
+// should consider, starting at start and bounded by commitScanLimit.
+func walkBranchListCommits(ctx context.Context, repo *git.Repository, start plumbing.Hash, isOnDefault bool, collect func(*object.Commit)) error {
+	if !isOnDefault {
+		// On feature branches, use first-parent walk with branch filtering.
+		// This avoids walking into main's full history through merge commit parents.
+		reachableFromMain := computeReachableFromMain(ctx, repo)
+		return walkFirstParentCommits(ctx, repo, start, commitScanLimit, func(c *object.Commit) error {
+			// Once we hit a commit reachable from main on the first-parent chain,
+			// all earlier ancestors are also shared-with-main, so stop scanning.
+			if reachableFromMain[c.Hash] {
+				return errStopIteration
+			}
+			collect(c)
+			return nil
+		})
+	}
+
+	// On the default branch, use full DAG walk to find checkpoint commits
+	// on merged feature branches (second parents of merge commits).
+	iter, err := repo.Log(&git.LogOptions{
+		From:  start,
+		Order: git.LogOrderCommitterTime,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get commit log: %w", err)
+	}
+	defer iter.Close()
+
+	count := 0
+	return iter.ForEach(func(c *object.Commit) error { //nolint:wrapcheck // caller wraps
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
+		if count >= commitScanLimit {
+			return storer.ErrStop
+		}
+		count++
+		collect(c)
+		return nil
+	})
 }
 
 // hydrateListedBranchCheckpoints fills SessionID/etc for remote-discovered List
