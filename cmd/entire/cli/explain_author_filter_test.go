@@ -16,6 +16,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -149,7 +150,7 @@ func TestGetBranchCheckpointsWithOptions_AuthorFiltersBeforeLimit(t *testing.T) 
 	t.Chdir(tmpDir)
 
 	testutil.InitRepo(t, tmpDir)
-	repo, err := git.PlainOpen(tmpDir)
+	repo, err := gitrepo.OpenPath(tmpDir)
 	require.NoError(t, err)
 
 	aliceCP, bobCP := seedAuthoredCheckpoints(t, tmpDir, repo)
@@ -179,7 +180,7 @@ func TestRunExplainListJSON_AuthorFilterAndFields(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	testutil.InitRepo(t, tmpDir)
-	repo, err := git.PlainOpen(tmpDir)
+	repo, err := gitrepo.OpenPath(tmpDir)
 	require.NoError(t, err)
 
 	aliceCP, _ := seedAuthoredCheckpoints(t, tmpDir, repo)
@@ -200,7 +201,7 @@ func TestGetBranchCheckpointsByAuthor_BlankFilterMatchesAll(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	testutil.InitRepo(t, tmpDir)
-	repo, err := git.PlainOpen(tmpDir)
+	repo, err := gitrepo.OpenPath(tmpDir)
 	require.NoError(t, err)
 
 	seedAuthoredCheckpoints(t, tmpDir, repo)
@@ -220,7 +221,7 @@ func TestRunExplainBranchWithFilter_AuthorEmptyState(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	testutil.InitRepo(t, tmpDir)
-	repo, err := git.PlainOpen(tmpDir)
+	repo, err := gitrepo.OpenPath(tmpDir)
 	require.NoError(t, err)
 
 	seedAuthoredCheckpoints(t, tmpDir, repo)

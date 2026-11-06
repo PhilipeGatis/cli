@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/require"
 
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
@@ -22,7 +23,7 @@ func initWalkRepo(t *testing.T) (*git.Repository, func(msg string) plumbing.Hash
 	t.Helper()
 	dir := t.TempDir()
 	testutil.InitRepo(t, dir)
-	repo, err := git.PlainOpen(dir)
+	repo, err := gitrepo.OpenPath(dir)
 	require.NoError(t, err)
 	w, err := repo.Worktree()
 	require.NoError(t, err)

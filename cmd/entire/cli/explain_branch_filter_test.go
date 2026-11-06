@@ -16,6 +16,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -308,7 +309,7 @@ func TestCheckpointListBranch_OriginHEADNamesNonMainDefault(t *testing.T) {
 func TestCheckpointListBranch_ImportedOnlyForDefaultOrCurrent(t *testing.T) {
 	r := setupBranchFilterRepo(t)
 
-	repo, err := git.PlainOpen(r.dir)
+	repo, err := gitrepo.OpenPath(r.dir)
 	require.NoError(t, err)
 	red, err := redact.JSONLBytes([]byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}` + "\n"))
 	require.NoError(t, err)
